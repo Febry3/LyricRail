@@ -68,6 +68,42 @@ Create a production frontend build:
 npm run build
 ```
 
+Build the Windows executable and installers locally:
+
+```powershell
+npm run tauri build
+```
+
+The standalone executable is written to:
+
+```text
+src-tauri/target/release/taskbar-lyrics-player.exe
+```
+
+Tauri also creates Windows installer packages under:
+
+```text
+src-tauri/target/release/bundle/
+```
+
+Run the executable directly from PowerShell:
+
+```powershell
+& .\src-tauri\target\release\taskbar-lyrics-player.exe
+```
+
+## GitHub Actions build
+
+The `Build Windows app` workflow runs automatically for pushes to `main` and pull requests. You can also start it manually:
+
+1. Open the repository on GitHub.
+2. Select **Actions** → **Build Windows app**.
+3. Select **Run workflow** and choose the branch.
+4. Open the completed workflow run.
+5. Download `taskbar-lyrics-player-windows` from **Artifacts**.
+
+The artifact contains the standalone `.exe` and the Tauri installer files. The workflow builds without code signing, so Windows SmartScreen may show a warning until the application is signed or installed locally.
+
 Run the Rust test suite:
 
 ```powershell
