@@ -104,6 +104,15 @@ The `Build Windows app` workflow runs automatically for pushes to `main` and pul
 
 The artifact contains the standalone `.exe` and the Tauri installer files. The workflow builds without code signing, so Windows SmartScreen may show a warning until the application is signed or installed locally.
 
+To publish a GitHub Release, update the app version in `src-tauri/tauri.conf.json`, commit that change, then create and push a version tag:
+
+```powershell
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Tags beginning with `v` create a published release named after the tag. The release includes the standalone executable, the MSI installer, and the NSIS setup executable.
+
 Run the Rust test suite:
 
 ```powershell

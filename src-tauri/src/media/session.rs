@@ -7,10 +7,13 @@ use std::{
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use gsmtc::{ManagerEvent, SessionModel, SessionUpdateEvent};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tracing::{debug, error, info, warn};
 
 use crate::lyrics::{fetch_synced_lyrics, synchronize, LyricLine, LyricsState, LyricsStatus};
+
+const WIDGET_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const VISIBILITY_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -114,6 +117,8 @@ struct WorkerState {
     lyrics_lines: HashMap<usize, Vec<LyricLine>>,
     lyrics_generations: HashMap<usize, u64>,
     timeline_samples: HashMap<usize, TimelineSample>,
+    no_active_track_since: Option<Instant>,
+    widget_hidden: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -153,6 +158,22 @@ pub fn spawn_media_session_worker(app: AppHandle, state: Arc<Mutex<MediaState>>)
             loop {
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 tick_active_lyrics(&ticker_app, &ticker_state, &ticker_worker_state);
+            }
+        });
+
+        let visibility_app = app.clone();
+        let visibility_worker_state = Arc::clone(&worker_state);
+        tauri::async_runtime::spawn(async move {
+            loop {
+                tokio::time::sleep(VISIBILITY_POLL_INTERVAL).await;
+                let should_hide = with_worker_state(&visibility_worker_state, |worker| {
+                    should_hide_idle_widget(worker, Instant::now())
+                })
+                .unwrap_or(false);
+
+                if should_hide {
+                    set_widget_visibility(&visibility_app, false);
+                }
             }
         });
 
@@ -206,6 +227,9 @@ pub fn spawn_media_session_worker(app: AppHandle, state: Arc<Mutex<MediaState>>)
                         worker.timeline_samples.remove(&session_id);
                         if worker.active_session_id == Some(session_id) {
                             worker.active_session_id = None;
+                            worker
+                                .no_active_track_since
+                                .get_or_insert_with(Instant::now);
                             true
                         } else {
                             false
@@ -223,7 +247,10 @@ pub fn spawn_media_session_worker(app: AppHandle, state: Arc<Mutex<MediaState>>)
                             session_id.filter(|id| worker.supported_session_ids.contains(id));
                         worker.active_session_id = supported_session_id;
                         let Some(session_id) = supported_session_id else {
-                            return (None, None);
+                            worker
+                                .no_active_track_since
+                                .get_or_insert_with(Instant::now);
+                            return (None, None, false);
                         };
 
                         let mut current_state = worker
@@ -248,14 +275,33 @@ pub fn spawn_media_session_worker(app: AppHandle, state: Arc<Mutex<MediaState>>)
                             None
                         };
 
-                        (Some(current_state), lyrics_request)
+                        let should_show = if !current_state.title.is_empty() {
+                            worker.no_active_track_since = None;
+                            if worker.widget_hidden {
+                                worker.widget_hidden = false;
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        };
+
+                        (Some(current_state), lyrics_request, should_show)
                     });
 
                     match session_id {
                         Some(session_id) => {
                             info!(session_id, "active media session changed");
-                            let (current_state, lyrics_request) =
-                                activation.ok().unwrap_or((None, None));
+                            let (current_state, lyrics_request) = activation
+                                .ok()
+                                .map(|(state, request, should_show)| {
+                                    if should_show {
+                                        set_widget_visibility(&app, true);
+                                    }
+                                    (state, request)
+                                })
+                                .unwrap_or((None, None));
                             let current_state = current_state.unwrap_or_default();
                             publish_state(&app, &state, current_state);
                             if let Some(request) = lyrics_request {
@@ -374,13 +420,33 @@ fn update_session(
             None
         };
 
+        let should_show = if is_active && !media_state.title.is_empty() {
+            worker.no_active_track_since = None;
+            if worker.widget_hidden {
+                worker.widget_hidden = false;
+                true
+            } else {
+                false
+            }
+        } else if is_active {
+            worker
+                .no_active_track_since
+                .get_or_insert_with(Instant::now);
+            false
+        } else {
+            false
+        };
+
         worker.sessions.insert(session_id, media_state.clone());
-        (is_active, media_state, lyrics_request)
+        (is_active, media_state, lyrics_request, should_show)
     });
 
     match updated_session {
-        Ok((true, media_state, lyrics_request)) => {
+        Ok((true, media_state, lyrics_request, should_show)) => {
             debug!(session_id, title = %media_state.title, "active media state updated");
+            if should_show {
+                set_widget_visibility(app, true);
+            }
             publish_state(app, state, media_state);
             if let Some(request) = lyrics_request {
                 spawn_lyrics_fetch(
@@ -391,7 +457,7 @@ fn update_session(
                 );
             }
         }
-        Ok((false, _, _)) => debug!(session_id, "inactive media session updated"),
+        Ok((false, _, _, _)) => debug!(session_id, "inactive media session updated"),
         Err(()) => publish_state(app, state, MediaState::default()),
     }
 }
@@ -590,6 +656,42 @@ fn projected_position_ms(
     }
 }
 
+fn should_hide_idle_widget(worker: &mut WorkerState, now: Instant) -> bool {
+    let has_active_track = worker
+        .active_session_id
+        .and_then(|session_id| worker.sessions.get(&session_id))
+        .is_some_and(|state| !state.title.is_empty());
+
+    if has_active_track {
+        worker.no_active_track_since = None;
+        return false;
+    }
+
+    let idle_since = *worker.no_active_track_since.get_or_insert(now);
+    if !worker.widget_hidden && now.saturating_duration_since(idle_since) >= WIDGET_IDLE_TIMEOUT {
+        worker.widget_hidden = true;
+        true
+    } else {
+        false
+    }
+}
+
+fn set_widget_visibility(app: &AppHandle, visible: bool) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+
+    let result = if visible {
+        window.show()
+    } else {
+        window.hide()
+    };
+
+    if let Err(error) = result {
+        warn!(%error, visible, "could not update taskbar widget visibility");
+    }
+}
+
 fn is_supported_media_source(source: &str) -> bool {
     let source = source.trim().to_lowercase();
 
@@ -785,5 +887,21 @@ mod tests {
         assert!(!is_supported_media_source("Microsoft Edge"));
         assert!(!is_supported_media_source("YouTube Music"));
         assert!(!is_supported_media_source("YouTube"));
+    }
+
+    #[test]
+    fn idle_widget_hides_only_after_five_minutes_without_an_active_track() {
+        let mut worker = WorkerState::default();
+        let start = Instant::now();
+
+        assert!(!should_hide_idle_widget(&mut worker, start));
+        assert!(!should_hide_idle_widget(
+            &mut worker,
+            start + Duration::from_secs(299)
+        ));
+        assert!(should_hide_idle_widget(
+            &mut worker,
+            start + Duration::from_secs(300)
+        ));
     }
 }

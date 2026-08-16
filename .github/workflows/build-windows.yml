@@ -3,11 +3,12 @@ name: Build Windows app
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-windows:
@@ -30,9 +31,11 @@ jobs:
         run: npm ci
 
       - name: Build Tauri executable and installers
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         run: npm run tauri build
 
       - name: Upload Windows build artifacts
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         uses: actions/upload-artifact@v4
         with:
           name: taskbar-lyrics-player-windows
@@ -40,3 +43,18 @@ jobs:
           path: |
             src-tauri/target/release/taskbar-lyrics-player.exe
             src-tauri/target/release/bundle/
+
+      - name: Build and publish GitHub Release
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        uses: tauri-apps/tauri-action@v0.6.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: LyricRail ${{ github.ref_name }}
+          releaseBody: Download the Windows executable or installer below.
+          releaseDraft: false
+          prerelease: false
+          generateReleaseNotes: true
+          tauriScript: npm run tauri
+          uploadPlainBinary: true
