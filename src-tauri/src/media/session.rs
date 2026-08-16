@@ -166,12 +166,18 @@ pub fn spawn_media_session_worker(app: AppHandle, state: Arc<Mutex<MediaState>>)
         tauri::async_runtime::spawn(async move {
             loop {
                 tokio::time::sleep(VISIBILITY_POLL_INTERVAL).await;
+                let should_show = with_worker_state(&visibility_worker_state, |worker| {
+                    should_show_idle_widget(worker)
+                })
+                .unwrap_or(false);
                 let should_hide = with_worker_state(&visibility_worker_state, |worker| {
                     should_hide_idle_widget(worker, Instant::now())
                 })
                 .unwrap_or(false);
 
-                if should_hide {
+                if should_show {
+                    set_widget_visibility(&visibility_app, true);
+                } else if should_hide {
                     set_widget_visibility(&visibility_app, false);
                 }
             }
@@ -387,7 +393,17 @@ fn update_session(
             .sessions
             .get(&session_id)
             .is_none_or(|previous| track_identity_changed(previous, &media_state));
-        let is_active = worker.active_session_id == Some(session_id);
+        let is_active = if worker.active_session_id == Some(session_id) {
+            true
+        } else if worker.active_session_id.is_none()
+            && !media_state.title.is_empty()
+            && media_state.playback_status.eq_ignore_ascii_case("playing")
+        {
+            worker.active_session_id = Some(session_id);
+            true
+        } else {
+            false
+        };
         let mut media_state = media_state;
         let lyrics_request = if track_changed {
             worker.lyrics_lines.remove(&session_id);
@@ -663,16 +679,40 @@ fn projected_position_ms(
     }
 }
 
-fn should_hide_idle_widget(worker: &mut WorkerState, now: Instant) -> bool {
-    let has_active_track = worker
-        .active_session_id
-        .and_then(|session_id| worker.sessions.get(&session_id))
-        .is_some_and(|state| {
-            !state.title.is_empty() && state.playback_status.eq_ignore_ascii_case("playing")
-        });
+fn playing_session_id(worker: &WorkerState) -> Option<usize> {
+    if let Some(active_session_id) = worker.active_session_id {
+        return worker
+            .sessions
+            .get(&active_session_id)
+            .filter(|state| {
+                !state.title.is_empty() && state.playback_status.eq_ignore_ascii_case("playing")
+            })
+            .map(|_| active_session_id);
+    }
 
-    if has_active_track {
-        worker.no_active_track_since = None;
+    worker.sessions.iter().find_map(|(session_id, state)| {
+        (!state.title.is_empty() && state.playback_status.eq_ignore_ascii_case("playing"))
+            .then_some(*session_id)
+    })
+}
+
+fn mark_playing_session_active(worker: &mut WorkerState) -> bool {
+    let Some(session_id) = playing_session_id(worker) else {
+        return false;
+    };
+
+    worker.active_session_id = Some(session_id);
+    worker.no_active_track_since = None;
+    worker.widget_hidden = false;
+    true
+}
+
+fn should_show_idle_widget(worker: &mut WorkerState) -> bool {
+    worker.widget_hidden && mark_playing_session_active(worker)
+}
+
+fn should_hide_idle_widget(worker: &mut WorkerState, now: Instant) -> bool {
+    if mark_playing_session_active(worker) {
         return false;
     }
 
@@ -934,5 +974,45 @@ mod tests {
             &mut worker,
             start + Duration::from_secs(120)
         ));
+    }
+
+    #[test]
+    fn playing_track_recovers_widget_after_idle_hide() {
+        let mut worker = WorkerState::default();
+        worker.active_session_id = Some(7);
+        worker.widget_hidden = true;
+        worker.sessions.insert(
+            7,
+            MediaState {
+                track_id: Some("7".into()),
+                title: "Playing song".into(),
+                playback_status: "Playing".into(),
+                ..MediaState::default()
+            },
+        );
+
+        assert!(should_show_idle_widget(&mut worker));
+        assert!(!worker.widget_hidden);
+        assert!(!should_hide_idle_widget(&mut worker, Instant::now()));
+    }
+
+    #[test]
+    fn playing_track_can_recover_when_current_session_was_not_recorded() {
+        let mut worker = WorkerState::default();
+        worker.widget_hidden = true;
+        worker.sessions.insert(
+            7,
+            MediaState {
+                track_id: Some("7".into()),
+                title: "Playing song".into(),
+                playback_status: "Playing".into(),
+                ..MediaState::default()
+            },
+        );
+
+        assert!(should_show_idle_widget(&mut worker));
+        assert_eq!(worker.active_session_id, Some(7));
+        assert!(!worker.widget_hidden);
+        assert!(!should_hide_idle_widget(&mut worker, Instant::now()));
     }
 }

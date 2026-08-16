@@ -258,7 +258,7 @@ function SettingsView() {
           className="settings-page__close"
           type="button"
           aria-label="Close settings"
-          onClick={() => void getCurrentWindow().close()}
+          onClick={() => void getCurrentWindow().hide()}
         >
           ×
         </button>

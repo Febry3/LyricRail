@@ -46,6 +46,14 @@ mod tests {
         assert_eq!(state.position_ms, 0);
         assert_eq!(state.duration_ms, 210_000);
     }
+
+    #[test]
+    fn settings_window_close_is_reusable() {
+        let source = include_str!("../../src/App.tsx");
+
+        assert!(source.contains("getCurrentWindow().hide()"));
+        assert!(!source.contains("getCurrentWindow().close()"));
+    }
 }
 
 #[tauri::command]
@@ -131,6 +139,17 @@ pub fn run() {
                 .items(&[&settings_item, &exit_item])
                 .build()?;
             let tray_icon = Image::from_bytes(TRAY_ICON_BYTES)?;
+
+            if let Some(settings_window) = app.get_webview_window("settings") {
+                let reusable_settings_window = settings_window.clone();
+                settings_window.on_window_event(move |event| {
+                    if let WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = reusable_settings_window.hide();
+                    }
+                });
+            }
+
             let tray_builder = TrayIconBuilder::new()
                 .menu(&tray_menu)
                 .icon(tray_icon)
@@ -171,7 +190,7 @@ use tauri::{
     image::Image,
     menu::{MenuBuilder, MenuItem},
     tray::TrayIconBuilder,
-    Manager,
+    Manager, WindowEvent,
 };
 
 const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/32x32.png");
