@@ -31,7 +31,6 @@ jobs:
         run: npm ci
 
       - name: Build Tauri executable and installers
-        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         run: npm run tauri build
 
       - name: Upload Windows build artifacts
@@ -44,17 +43,27 @@ jobs:
             src-tauri/target/release/taskbar-lyrics-player.exe
             src-tauri/target/release/bundle/
 
-      - name: Build and publish GitHub Release
+      - name: Publish GitHub Release assets
         if: ${{ startsWith(github.ref, 'refs/tags/v') }}
-        uses: tauri-apps/tauri-action@v0.6.2
+        shell: pwsh
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tagName: ${{ github.ref_name }}
-          releaseName: LyricRail ${{ github.ref_name }}
-          releaseBody: Download the Windows executable or installer below.
-          releaseDraft: false
-          prerelease: false
-          generateReleaseNotes: true
-          tauriScript: npm run tauri
-          uploadPlainBinary: true
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $repository = $env:GITHUB_REPOSITORY
+
+          gh release view $tag --repo $repository *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag `
+              --repo $repository `
+              --title "LyricRail $tag" `
+              --notes "Download the Windows executable or installer below." `
+              --verify-tag
+          }
+
+          $assets = @(
+            (Resolve-Path "src-tauri/target/release/taskbar-lyrics-player.exe").Path,
+            (Get-ChildItem -File "src-tauri/target/release/bundle/msi/*.msi").FullName,
+            (Get-ChildItem -File "src-tauri/target/release/bundle/nsis/*.exe").FullName
+          )
+          gh release upload $tag $assets --repo $repository --clobber
