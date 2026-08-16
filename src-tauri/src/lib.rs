@@ -54,6 +54,18 @@ mod tests {
         assert!(source.contains("getCurrentWindow().hide()"));
         assert!(!source.contains("getCurrentWindow().close()"));
     }
+
+    #[test]
+    fn transparent_background_preference_is_wired_through_widget_and_styles() {
+        let app_source = include_str!("../../src/App.tsx");
+        let style_source = include_str!("../../src/App.css");
+
+        assert!(app_source.contains("transparentBackground: boolean"));
+        assert!(app_source.contains("transparentBackground: false"));
+        assert!(app_source.contains("Transparent background"));
+        assert!(app_source.contains("media-strip--transparent"));
+        assert!(style_source.contains(".media-strip--transparent"));
+    }
 }
 
 #[tauri::command]

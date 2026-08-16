@@ -85,6 +85,17 @@ body,
         0 14px 32px rgb(0 0 0 / 38%);
 }
 
+.media-strip--transparent {
+    border-color: transparent;
+    background: transparent;
+    box-shadow: none;
+}
+
+.media-strip--transparent.media-strip--interactive:hover {
+    border-color: transparent;
+    box-shadow: none;
+}
+
 .media-strip--no-artwork {
     grid-template-columns: minmax(0, 1fr) max-content;
 }

@@ -23,6 +23,7 @@ type DisplayPreferences = {
   playPause: boolean;
   next: boolean;
   progress: boolean;
+  transparentBackground: boolean;
   width: number;
   lyricsFontSize: number;
 };
@@ -36,6 +37,7 @@ const DEFAULT_DISPLAY_PREFERENCES: DisplayPreferences = {
   playPause: true,
   next: true,
   progress: true,
+  transparentBackground: false,
   width: 560,
   lyricsFontSize: 14,
 };
@@ -205,6 +207,11 @@ function SettingsView() {
     { key: "playPause", label: "Play / pause button", detail: "Show the main playback control." },
     { key: "next", label: "Next button", detail: "Show the next-track control." },
     { key: "progress", label: "Progress bar", detail: "Show playback progress below the content." },
+    {
+      key: "transparentBackground",
+      label: "Transparent background",
+      detail: "Remove the widget's outer panel background.",
+    },
   ];
 
   const updatePreference = (key: keyof DisplayPreferences, value: boolean | number) => {
@@ -582,6 +589,7 @@ function WidgetView() {
     isLyricsExpanded ? "media-strip--expanded" : "",
     !displayPreferences.albumArt ? "media-strip--no-artwork" : "",
     !hasVisibleControls ? "media-strip--no-controls" : "",
+    displayPreferences.transparentBackground ? "media-strip--transparent" : "",
   ]
     .filter(Boolean)
     .join(" ");
