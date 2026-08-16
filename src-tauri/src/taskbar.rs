@@ -17,17 +17,26 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 const COMPACT_WIDTH: u32 = 560;
+pub const MIN_COMPACT_WIDTH: u32 = 360;
+pub const MAX_COMPACT_WIDTH: u32 = 720;
 const COMPACT_HEIGHT: u32 = 52;
 const EXPANDED_HEIGHT: u32 = 178;
 const TASKBAR_INSET: i32 = 12;
 const TOPMOST_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(2);
 
 pub fn position_compact_window(window: &WebviewWindow) -> Result<(), String> {
-    position_window(window, COMPACT_HEIGHT, true)
+    position_compact_window_with_width(window, COMPACT_WIDTH)
+}
+
+pub fn position_compact_window_with_width(
+    window: &WebviewWindow,
+    width: u32,
+) -> Result<(), String> {
+    position_window(window, COMPACT_HEIGHT, true, normalize_compact_width(width))
 }
 
 pub fn position_expanded_window(window: &WebviewWindow) -> Result<(), String> {
-    position_window(window, EXPANDED_HEIGHT, false)
+    position_window(window, EXPANDED_HEIGHT, false, COMPACT_WIDTH)
 }
 
 pub fn install_window_persistence(window: WebviewWindow) {
@@ -87,12 +96,17 @@ pub fn reassert_visible_topmost(window: &WebviewWindow) -> Result<(), String> {
     Ok(())
 }
 
-fn position_window(window: &WebviewWindow, height: u32, compact: bool) -> Result<(), String> {
+fn position_window(
+    window: &WebviewWindow,
+    height: u32,
+    compact: bool,
+    width: u32,
+) -> Result<(), String> {
     let taskbar = taskbar_bounds()?;
     let (x, y) = placement_for_taskbar(taskbar, height, compact)?;
 
     window
-        .set_size(PhysicalSize::new(COMPACT_WIDTH, height))
+        .set_size(PhysicalSize::new(width, height))
         .map_err(|error| error.to_string())?;
     window
         .set_position(Position::Physical(PhysicalPosition::new(x, y)))
@@ -164,11 +178,15 @@ fn taskbar_bounds() -> Result<TaskbarBounds, String> {
     })
 }
 
+pub fn normalize_compact_width(width: u32) -> u32 {
+    width.clamp(MIN_COMPACT_WIDTH, MAX_COMPACT_WIDTH)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        placement_for_taskbar, TaskbarBounds, COMPACT_HEIGHT, COMPACT_WIDTH, EXPANDED_HEIGHT,
-        TASKBAR_INSET,
+        normalize_compact_width, placement_for_taskbar, TaskbarBounds, COMPACT_HEIGHT,
+        COMPACT_WIDTH, EXPANDED_HEIGHT, MAX_COMPACT_WIDTH, MIN_COMPACT_WIDTH, TASKBAR_INSET,
     };
     use windows_sys::Win32::UI::Shell::{ABE_BOTTOM, ABE_LEFT, ABE_RIGHT, ABE_TOP};
 
@@ -250,5 +268,12 @@ mod tests {
             placement,
             (1864 - COMPACT_WIDTH as i32 - TASKBAR_INSET, TASKBAR_INSET)
         );
+    }
+
+    #[test]
+    fn compact_width_is_clamped_to_the_supported_range() {
+        assert_eq!(normalize_compact_width(280), MIN_COMPACT_WIDTH);
+        assert_eq!(normalize_compact_width(560), 560);
+        assert_eq!(normalize_compact_width(900), MAX_COMPACT_WIDTH);
     }
 }

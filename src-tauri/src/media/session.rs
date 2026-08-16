@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -109,6 +109,7 @@ impl MediaState {
 #[derive(Default)]
 struct WorkerState {
     active_session_id: Option<usize>,
+    supported_session_ids: HashSet<usize>,
     sessions: HashMap<usize, MediaState>,
     lyrics_lines: HashMap<usize, Vec<LyricLine>>,
     lyrics_generations: HashMap<usize, u64>,
@@ -150,7 +151,7 @@ pub fn spawn_media_session_worker(app: AppHandle, state: Arc<Mutex<MediaState>>)
         let ticker_worker_state = Arc::clone(&worker_state);
         tauri::async_runtime::spawn(async move {
             loop {
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                tokio::time::sleep(Duration::from_millis(50)).await;
                 tick_active_lyrics(&ticker_app, &ticker_state, &ticker_worker_state);
             }
         });
@@ -162,6 +163,14 @@ pub fn spawn_media_session_worker(app: AppHandle, state: Arc<Mutex<MediaState>>)
                     mut rx,
                     source,
                 } => {
+                    if !is_supported_media_source(&source) {
+                        info!(session_id, source = %source, "ignoring unsupported media session");
+                        continue;
+                    }
+
+                    let _ = with_worker_state(&worker_state, |worker| {
+                        worker.supported_session_ids.insert(session_id);
+                    });
                     info!(session_id, source = %source, "media session detected");
                     let app = app.clone();
                     let state = Arc::clone(&state);
@@ -191,6 +200,7 @@ pub fn spawn_media_session_worker(app: AppHandle, state: Arc<Mutex<MediaState>>)
                 ManagerEvent::SessionRemoved { session_id } => {
                     let should_clear = with_worker_state(&worker_state, |worker| {
                         worker.sessions.remove(&session_id);
+                        worker.supported_session_ids.remove(&session_id);
                         worker.lyrics_lines.remove(&session_id);
                         worker.lyrics_generations.remove(&session_id);
                         worker.timeline_samples.remove(&session_id);
@@ -209,8 +219,10 @@ pub fn spawn_media_session_worker(app: AppHandle, state: Arc<Mutex<MediaState>>)
                 }
                 ManagerEvent::CurrentSessionChanged { session_id } => {
                     let activation = with_worker_state(&worker_state, |worker| {
-                        worker.active_session_id = session_id;
-                        let Some(session_id) = session_id else {
+                        let supported_session_id =
+                            session_id.filter(|id| worker.supported_session_ids.contains(id));
+                        worker.active_session_id = supported_session_id;
+                        let Some(session_id) = supported_session_id else {
                             return (None, None);
                         };
 
@@ -578,6 +590,12 @@ fn projected_position_ms(
     }
 }
 
+fn is_supported_media_source(source: &str) -> bool {
+    let source = source.trim().to_lowercase();
+
+    source.contains("spotify")
+}
+
 fn merge_media_state(
     snapshot: SessionSnapshot,
     previous_artwork_url: Option<String>,
@@ -750,5 +768,22 @@ mod tests {
             projected_position_ms(179_900, 180_000, "Playing", 750),
             180_000
         );
+    }
+
+    #[test]
+    fn accepts_supported_media_sources() {
+        assert!(is_supported_media_source(
+            "SpotifyAB.SpotifyMusic_zpdnekdrzrea0"
+        ));
+    }
+
+    #[test]
+    fn rejects_unrelated_media_sources() {
+        assert!(!is_supported_media_source("foobar.video.player"));
+        assert!(!is_supported_media_source("Windows Media Player"));
+        assert!(!is_supported_media_source("Google Chrome"));
+        assert!(!is_supported_media_source("Microsoft Edge"));
+        assert!(!is_supported_media_source("YouTube Music"));
+        assert!(!is_supported_media_source("YouTube"));
     }
 }

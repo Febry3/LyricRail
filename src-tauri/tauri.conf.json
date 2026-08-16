@@ -22,6 +22,18 @@
                 "skipTaskbar": true,
                 "alwaysOnTop": true,
                 "visible": true
+            },
+            {
+                "label": "settings",
+                "title": "Taskbar Lyrics Player Settings",
+                "url": "index.html?view=settings",
+                "width": 400,
+                "height": 520,
+                "decorations": true,
+                "transparent": false,
+                "resizable": false,
+                "alwaysOnTop": false,
+                "visible": false
             }
         ],
         "security": {

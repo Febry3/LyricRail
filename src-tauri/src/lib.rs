@@ -65,12 +65,28 @@ fn get_media_state(state: tauri::State<'_, Arc<Mutex<MediaState>>>) -> MediaStat
 }
 
 #[tauri::command]
-fn set_compact_expanded(window: tauri::WebviewWindow, expanded: bool) -> Result<(), String> {
+fn set_compact_expanded(
+    window: tauri::WebviewWindow,
+    expanded: bool,
+    width: u32,
+) -> Result<(), String> {
     if expanded {
         taskbar::position_expanded_window(&window)
     } else {
-        taskbar::position_compact_window(&window)
+        taskbar::position_compact_window_with_width(&window, width)
     }
+}
+
+#[tauri::command]
+fn set_compact_width(app: tauri::AppHandle, width: u32, expanded: bool) -> Result<(), String> {
+    if expanded {
+        return Ok(());
+    }
+
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "main window is unavailable".to_owned())?;
+    taskbar::position_compact_window_with_width(&window, width)
 }
 
 #[tauri::command]
@@ -93,17 +109,45 @@ pub fn run() {
     let media_state = Arc::new(Mutex::new(MediaState::default()));
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .plugin(tauri_plugin_opener::init())
         .manage(Arc::clone(&media_state))
         .invoke_handler(tauri::generate_handler![
             ping,
             get_media_state,
             set_compact_expanded,
+            set_compact_width,
             previous_track,
             play_pause,
             next_track
         ])
         .setup(move |app| {
+            let settings_item = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
+            let exit_item = MenuItem::with_id(app, "exit", "Exit", true, None::<&str>)?;
+            let tray_menu = MenuBuilder::new(app)
+                .items(&[&settings_item, &exit_item])
+                .build()?;
+            let tray_icon = Image::from_bytes(TRAY_ICON_BYTES)?;
+            let tray_builder = TrayIconBuilder::new()
+                .menu(&tray_menu)
+                .icon(tray_icon)
+                .tooltip("LyricRail")
+                .show_menu_on_left_click(true)
+                .on_menu_event(|app, event| match event.id().as_ref() {
+                    "settings" => {
+                        if let Some(window) = app.get_webview_window("settings") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                    "exit" => app.exit(0),
+                    _ => {}
+                });
+            tray_builder.build(app)?;
+
             if let Some(window) = app.get_webview_window("main") {
                 if let Err(error) = taskbar::position_compact_window(&window) {
                     tracing::warn!(%error, "could not position compact taskbar window");
@@ -123,4 +167,11 @@ mod taskbar;
 use std::sync::{Arc, Mutex};
 
 use media::MediaState;
-use tauri::Manager;
+use tauri::{
+    image::Image,
+    menu::{MenuBuilder, MenuItem},
+    tray::TrayIconBuilder,
+    Manager,
+};
+
+const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/32x32.png");

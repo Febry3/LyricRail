@@ -1,11 +1,77 @@
 import { useEffect, useState, type KeyboardEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import "./App.css";
 import type { LyricsState, MediaErrorCode, MediaState } from "./types/media";
 
 const ARTWORK_FADE_MS = 180;
+const DISPLAY_PREFERENCES_KEY = "taskbar-lyrics-player:display-preferences";
+const MIN_WIDGET_WIDTH = 360;
+const MAX_WIDGET_WIDTH = 720;
+const MIN_LYRICS_FONT_SIZE = 10;
+const MAX_LYRICS_FONT_SIZE = 22;
 type AppErrorCode = "bridgeUnavailable";
+
+type DisplayPreferences = {
+  albumArt: boolean;
+  title: boolean;
+  artist: boolean;
+  lyrics: boolean;
+  previous: boolean;
+  playPause: boolean;
+  next: boolean;
+  progress: boolean;
+  width: number;
+  lyricsFontSize: number;
+};
+
+const DEFAULT_DISPLAY_PREFERENCES: DisplayPreferences = {
+  albumArt: true,
+  title: true,
+  artist: true,
+  lyrics: true,
+  previous: true,
+  playPause: true,
+  next: true,
+  progress: true,
+  width: 560,
+  lyricsFontSize: 14,
+};
+
+function loadDisplayPreferences(): DisplayPreferences {
+  try {
+    const stored = JSON.parse(localStorage.getItem(DISPLAY_PREFERENCES_KEY) ?? "null");
+    if (!stored || typeof stored !== "object") {
+      return DEFAULT_DISPLAY_PREFERENCES;
+    }
+
+    return Object.fromEntries(
+      Object.keys(DEFAULT_DISPLAY_PREFERENCES).map((key) => {
+        const preferenceKey = key as keyof DisplayPreferences;
+        const defaultValue = DEFAULT_DISPLAY_PREFERENCES[preferenceKey];
+        const storedValue = stored[preferenceKey];
+        const value =
+          typeof defaultValue === "boolean"
+            ? typeof storedValue === "boolean"
+              ? storedValue
+              : defaultValue
+            : typeof storedValue === "number" && Number.isFinite(storedValue)
+              ? preferenceKey === "width"
+                ? Math.min(Math.max(Math.round(storedValue), MIN_WIDGET_WIDTH), MAX_WIDGET_WIDTH)
+                : Math.min(
+                    Math.max(Math.round(storedValue), MIN_LYRICS_FONT_SIZE),
+                    MAX_LYRICS_FONT_SIZE,
+                  )
+              : defaultValue;
+        return [key, value];
+      }),
+    ) as DisplayPreferences;
+  } catch {
+    return DEFAULT_DISPLAY_PREFERENCES;
+  }
+}
 
 const NO_MEDIA_STATE: MediaState = {
   trackId: null,
@@ -122,7 +188,163 @@ function MediaIcon({ type }: { type: "previous" | "play" | "pause" | "next" }) {
   );
 }
 
-function App() {
+function SettingsView() {
+  const [preferences, setPreferences] = useState<DisplayPreferences>(loadDisplayPreferences);
+  const [launchAtStartup, setLaunchAtStartup] = useState(false);
+  const [autostartError, setAutostartError] = useState(false);
+  const displayOptions: Array<{
+    key: Exclude<keyof DisplayPreferences, "width" | "lyricsFontSize">;
+    label: string;
+    detail: string;
+  }> = [
+    { key: "albumArt", label: "Album artwork", detail: "Show the current track image." },
+    { key: "title", label: "Track title", detail: "Show the song name." },
+    { key: "artist", label: "Artist", detail: "Show the artist name." },
+    { key: "lyrics", label: "Lyrics", detail: "Show the current lyric line." },
+    { key: "previous", label: "Previous button", detail: "Show the previous-track control." },
+    { key: "playPause", label: "Play / pause button", detail: "Show the main playback control." },
+    { key: "next", label: "Next button", detail: "Show the next-track control." },
+    { key: "progress", label: "Progress bar", detail: "Show playback progress below the content." },
+  ];
+
+  const updatePreference = (key: keyof DisplayPreferences, value: boolean | number) => {
+    const nextPreferences = { ...preferences, [key]: value };
+    setPreferences(nextPreferences);
+    localStorage.setItem(DISPLAY_PREFERENCES_KEY, JSON.stringify(nextPreferences));
+    void emit("display-preferences-changed", nextPreferences);
+  };
+
+  useEffect(() => {
+    let disposed = false;
+
+    void isEnabled()
+      .then((enabled) => {
+        if (!disposed) {
+          setLaunchAtStartup(enabled);
+        }
+      })
+      .catch(() => {
+        if (!disposed) {
+          setAutostartError(true);
+        }
+      });
+
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  const updateAutostart = (enabled: boolean) => {
+    const operation = enabled ? enable() : disable();
+
+    setAutostartError(false);
+    void operation.catch(() => {
+      setLaunchAtStartup(!enabled);
+      setAutostartError(true);
+    });
+
+    setLaunchAtStartup(enabled);
+  };
+
+  return (
+    <main className="settings-page">
+      <header className="settings-page__header">
+        <div>
+          <p className="settings-page__eyebrow">Taskbar Lyrics Player</p>
+          <h1>Display settings</h1>
+          <p>Choose what stays visible in the compact widget.</p>
+        </div>
+        <button
+          className="settings-page__close"
+          type="button"
+          aria-label="Close settings"
+          onClick={() => void getCurrentWindow().close()}
+        >
+          ×
+        </button>
+      </header>
+
+      <section className="settings-width" aria-label="Widget width">
+        <div className="settings-width__header">
+          <span>
+            <span className="settings-option__label">Widget width</span>
+            <span className="settings-option__detail">Compact overlay width</span>
+          </span>
+          <output>{preferences.width}px</output>
+        </div>
+        <input
+          className="settings-width__slider"
+          type="range"
+          min={MIN_WIDGET_WIDTH}
+          max={MAX_WIDGET_WIDTH}
+          step={10}
+          value={preferences.width}
+          onChange={(event) => updatePreference("width", Number(event.target.value))}
+        />
+        <div className="settings-width__scale" aria-hidden="true">
+          <span>{MIN_WIDGET_WIDTH}px</span>
+          <span>{MAX_WIDGET_WIDTH}px</span>
+        </div>
+      </section>
+
+      <section className="settings-width" aria-label="Lyrics font size">
+        <div className="settings-width__header">
+          <span>
+            <span className="settings-option__label">Lyrics font size</span>
+            <span className="settings-option__detail">Applies to compact and expanded lyrics.</span>
+          </span>
+          <output>{preferences.lyricsFontSize}px</output>
+        </div>
+        <input
+          className="settings-width__slider"
+          type="range"
+          min={MIN_LYRICS_FONT_SIZE}
+          max={MAX_LYRICS_FONT_SIZE}
+          step={1}
+          value={preferences.lyricsFontSize}
+          onChange={(event) => updatePreference("lyricsFontSize", Number(event.target.value))}
+        />
+        <div className="settings-width__scale" aria-hidden="true">
+          <span>{MIN_LYRICS_FONT_SIZE}px</span>
+          <span>{MAX_LYRICS_FONT_SIZE}px</span>
+        </div>
+      </section>
+
+      <section className="settings-list" aria-label="Widget display options">
+        {displayOptions.map(({ key, label, detail }) => (
+          <label className="settings-option" key={key}>
+            <span>
+              <span className="settings-option__label">{label}</span>
+              <span className="settings-option__detail">{detail}</span>
+            </span>
+            <input
+              type="checkbox"
+              checked={preferences[key]}
+              onChange={(event) => updatePreference(key, event.target.checked)}
+            />
+          </label>
+        ))}
+        <label className="settings-option">
+          <span>
+            <span className="settings-option__label">Launch at startup</span>
+            <span className="settings-option__detail">
+              {autostartError
+                ? "Windows startup registration failed. Try again."
+                : "Start the widget when you sign in to Windows."}
+            </span>
+          </span>
+          <input
+            type="checkbox"
+            checked={launchAtStartup}
+            onChange={(event) => updateAutostart(event.target.checked)}
+          />
+        </label>
+      </section>
+    </main>
+  );
+}
+
+function WidgetView() {
   const [mediaState, setMediaState] = useState<MediaState>(NO_MEDIA_STATE);
   const [appError, setAppError] = useState<AppErrorCode | null>(null);
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
@@ -134,6 +356,44 @@ function App() {
   const [failedArtworkUrls, setFailedArtworkUrls] = useState<string[]>([]);
   const [isLyricsExpanded, setIsLyricsExpanded] = useState(false);
   const [controlError, setControlError] = useState<string | null>(null);
+  const [displayPreferences, setDisplayPreferences] =
+    useState<DisplayPreferences>(loadDisplayPreferences);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+
+    void listen<DisplayPreferences>("display-preferences-changed", (event) => {
+      if (!disposed) {
+        setDisplayPreferences(event.payload);
+      }
+    }).then((stopListening) => {
+      if (disposed) {
+        stopListening();
+      } else {
+        unlisten = stopListening;
+      }
+    });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    void invoke("set_compact_width", {
+      width: displayPreferences.width,
+      expanded: isLyricsExpanded,
+    });
+  }, [displayPreferences.width, isLyricsExpanded]);
+
+  useEffect(() => {
+    document.documentElement.style.setProperty(
+      "--lyrics-font-size",
+      `${displayPreferences.lyricsFontSize}px`,
+    );
+  }, [displayPreferences.lyricsFontSize]);
 
   useEffect(() => {
     const motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -271,6 +531,17 @@ function App() {
   const lyricsTeaser = getLyricsTeaser(mediaState.lyrics);
   const lyricsTone = mediaState.lyrics.status.toLowerCase();
   const lyricsFocusText = lyricsTeaser || "Current lyrics";
+  const lyricsFocusKey = [
+    mediaState.trackId ?? "no-track",
+    mediaState.lyrics.status,
+    mediaState.lyrics.currentLineIndex ?? "no-line",
+    lyricsFocusText,
+  ].join(":");
+  const currentLyricsKey = [
+    mediaState.trackId ?? "no-track",
+    mediaState.lyrics.currentLineIndex ?? "no-line",
+    mediaState.lyrics.currentLine ?? lyricsTeaser,
+  ].join(":");
   const progressRatio = getProgressRatio(mediaState.positionMs, mediaState.durationMs);
   const progressMax = Math.max(mediaState.durationMs, 1);
   const progressNow = Math.min(Math.max(mediaState.positionMs, 0), progressMax);
@@ -279,7 +550,10 @@ function App() {
   const toggleLyricsContext = () => {
     const nextExpanded = !isLyricsExpanded;
     setIsLyricsExpanded(nextExpanded);
-    void invoke("set_compact_expanded", { expanded: nextExpanded }).catch(() => {
+    void invoke("set_compact_expanded", {
+      expanded: nextExpanded,
+      width: displayPreferences.width,
+    }).catch(() => {
       setIsLyricsExpanded(false);
     });
   };
@@ -299,13 +573,23 @@ function App() {
     });
   };
   const isPlaying = mediaState.playbackStatus === "Playing";
+  const hasVisibleControls =
+    displayPreferences.previous || displayPreferences.playPause || displayPreferences.next;
+  const showMediaCopy = displayPreferences.title || displayPreferences.artist;
+  const mediaStripClassName = [
+    "media-strip",
+    hasActiveSession ? "media-strip--interactive" : "",
+    isLyricsExpanded ? "media-strip--expanded" : "",
+    !displayPreferences.albumArt ? "media-strip--no-artwork" : "",
+    !hasVisibleControls ? "media-strip--no-controls" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   return (
     <main className="container">
       <section
-        className={`media-strip ${hasActiveSession ? "media-strip--interactive" : ""} ${
-          isLyricsExpanded ? "media-strip--expanded" : ""
-        }`}
+        className={mediaStripClassName}
         role={hasActiveSession ? "group" : undefined}
         tabIndex={hasActiveSession ? 0 : -1}
         aria-expanded={hasActiveSession ? isLyricsExpanded : undefined}
@@ -315,32 +599,34 @@ function App() {
         onClick={hasActiveSession ? toggleLyricsContext : undefined}
         onKeyDown={hasActiveSession ? handleStripKeyDown : undefined}
       >
-        <div className="artwork-tile" aria-hidden={!currentArtworkUrl && !nextArtworkUrl}>
-          <div className="artwork-placeholder" />
-          {currentArtworkUrl && (
-            <img
-              className={`artwork-layer ${
-                isArtworkTransitioning
-                  ? "artwork-layer--fading-out"
-                  : "artwork-layer--visible"
-              }`}
-              src={currentArtworkUrl}
-              alt={nextArtworkUrl ? "" : artworkAltText}
-              aria-hidden={nextArtworkUrl ? true : undefined}
-              onError={() => handleArtworkError(currentArtworkUrl)}
-            />
-          )}
-          {nextArtworkUrl && (
-            <img
-              className={`artwork-layer artwork-layer--incoming ${
-                isArtworkTransitioning ? "artwork-layer--visible" : ""
-              }`}
-              src={nextArtworkUrl}
-              alt={artworkAltText}
-              onError={() => handleArtworkError(nextArtworkUrl)}
-            />
-          )}
-        </div>
+        {displayPreferences.albumArt && (
+          <div className="artwork-tile" aria-hidden={!currentArtworkUrl && !nextArtworkUrl}>
+            <div className="artwork-placeholder" />
+            {currentArtworkUrl && (
+              <img
+                className={`artwork-layer ${
+                  isArtworkTransitioning
+                    ? "artwork-layer--fading-out"
+                    : "artwork-layer--visible"
+                }`}
+                src={currentArtworkUrl}
+                alt={nextArtworkUrl ? "" : artworkAltText}
+                aria-hidden={nextArtworkUrl ? true : undefined}
+                onError={() => handleArtworkError(currentArtworkUrl)}
+              />
+            )}
+            {nextArtworkUrl && (
+              <img
+                className={`artwork-layer artwork-layer--incoming ${
+                  isArtworkTransitioning ? "artwork-layer--visible" : ""
+                }`}
+                src={nextArtworkUrl}
+                alt={artworkAltText}
+                onError={() => handleArtworkError(nextArtworkUrl)}
+              />
+            )}
+          </div>
+        )}
         {errorCopy ? (
           <div className="status-copy status-copy--error">
             <p className="status-title">{errorCopy.title}</p>
@@ -348,18 +634,35 @@ function App() {
           </div>
         ) : hasActiveSession ? (
           <div className="media-strip__body">
-            <div className="media-strip__summary">
-              <div className="media-copy">
-                <p className="track-title">{mediaState.title || "Untitled media"}</p>
-                <p className="artist">{mediaState.artist || "Unknown artist"}</p>
-              </div>
-              <div className="lyric-focus">
-                <p className={`lyric-focus__text lyric-focus__text--${lyricsTone}`}>
-                  {lyricsFocusText}
-                </p>
-              </div>
+            <div
+              className={`media-strip__summary ${
+                !showMediaCopy || !displayPreferences.lyrics
+                  ? "media-strip__summary--single"
+                  : ""
+              }`}
+            >
+              {showMediaCopy && (
+                <div className="media-copy">
+                  {displayPreferences.title && (
+                    <p className="track-title">{mediaState.title || "Untitled media"}</p>
+                  )}
+                  {displayPreferences.artist && (
+                    <p className="artist">{mediaState.artist || "Unknown artist"}</p>
+                  )}
+                </div>
+              )}
+              {displayPreferences.lyrics && (
+                <div className="lyric-focus">
+                  <p
+                    key={lyricsFocusKey}
+                    className={`lyric-focus__text lyric-focus__text--${lyricsTone}`}
+                  >
+                    {lyricsFocusText}
+                  </p>
+                </div>
+              )}
             </div>
-            {isLyricsExpanded && (
+            {displayPreferences.lyrics && isLyricsExpanded && (
               <section
                 id="lyrics-context"
                 className="lyrics-context"
@@ -383,7 +686,7 @@ function App() {
                     <span className="lyrics-line__label">Previous</span>
                     <span>{getLyricsLine(mediaState.lyrics.previousLine, "—")}</span>
                   </p>
-                  <p className="lyrics-line lyrics-line--current">
+                  <p key={currentLyricsKey} className="lyrics-line lyrics-line--current">
                     <span className="lyrics-line__label">Current</span>
                     <span>
                       {getLyricsLine(mediaState.lyrics.currentLine, lyricsTeaser || "—")}
@@ -396,20 +699,22 @@ function App() {
                 </div>
               </section>
             )}
-            <div
-              className="progress-rail"
-              role="progressbar"
-              aria-label="Playback progress"
-              aria-valuemin={0}
-              aria-valuemax={progressMax}
-              aria-valuenow={progressNow}
-              aria-valuetext={progressValueText}
-            >
-              <span
-                className="progress-rail__value"
-                style={{ width: `${progressRatio * 100}%` }}
-              />
-            </div>
+            {displayPreferences.progress && (
+              <div
+                className="progress-rail"
+                role="progressbar"
+                aria-label="Playback progress"
+                aria-valuemin={0}
+                aria-valuemax={progressMax}
+                aria-valuenow={progressNow}
+                aria-valuetext={progressValueText}
+              >
+                <span
+                  className="progress-rail__value"
+                  style={{ width: `${progressRatio * 100}%` }}
+                />
+              </div>
+            )}
           </div>
         ) : (
           <div className="status-copy">
@@ -419,7 +724,7 @@ function App() {
             </p>
           </div>
         )}
-        {hasActiveSession && !errorCopy && (
+        {hasActiveSession && !errorCopy && hasVisibleControls && (
           <div
             className="media-controls"
             role="group"
@@ -427,34 +732,40 @@ function App() {
             onClick={(event) => event.stopPropagation()}
             onKeyDown={(event) => event.stopPropagation()}
           >
-            <button
-              className="media-control"
-              type="button"
-              aria-label="Previous track"
-              title="Previous track"
-              onClick={() => handleMediaControl("previous_track", "Previous track")}
-            >
-              <MediaIcon type="previous" />
-            </button>
-            <button
-              className="media-control media-control--primary"
-              type="button"
-              aria-label={isPlaying ? "Pause" : "Play"}
-              title={isPlaying ? "Pause" : "Play"}
-              aria-pressed={isPlaying}
-              onClick={() => handleMediaControl("play_pause", isPlaying ? "Pause" : "Play")}
-            >
-              <MediaIcon type={isPlaying ? "pause" : "play"} />
-            </button>
-            <button
-              className="media-control"
-              type="button"
-              aria-label="Next track"
-              title="Next track"
-              onClick={() => handleMediaControl("next_track", "Next track")}
-            >
-              <MediaIcon type="next" />
-            </button>
+            {displayPreferences.previous && (
+              <button
+                className="media-control"
+                type="button"
+                aria-label="Previous track"
+                title="Previous track"
+                onClick={() => handleMediaControl("previous_track", "Previous track")}
+              >
+                <MediaIcon type="previous" />
+              </button>
+            )}
+            {displayPreferences.playPause && (
+              <button
+                className="media-control media-control--primary"
+                type="button"
+                aria-label={isPlaying ? "Pause" : "Play"}
+                title={isPlaying ? "Pause" : "Play"}
+                aria-pressed={isPlaying}
+                onClick={() => handleMediaControl("play_pause", isPlaying ? "Pause" : "Play")}
+              >
+                <MediaIcon type={isPlaying ? "pause" : "play"} />
+              </button>
+            )}
+            {displayPreferences.next && (
+              <button
+                className="media-control"
+                type="button"
+                aria-label="Next track"
+                title="Next track"
+                onClick={() => handleMediaControl("next_track", "Next track")}
+              >
+                <MediaIcon type="next" />
+              </button>
+            )}
           </div>
         )}
         {controlError && (
@@ -465,6 +776,12 @@ function App() {
       </section>
     </main>
   );
+}
+
+function App() {
+  const isSettingsView = new URLSearchParams(window.location.search).get("view") === "settings";
+
+  return isSettingsView ? <SettingsView /> : <WidgetView />;
 }
 
 export default App;
