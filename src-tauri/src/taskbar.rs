@@ -12,8 +12,8 @@ use windows_sys::Win32::UI::Shell::{
     SHAppBarMessage, ABE_BOTTOM, ABE_LEFT, ABE_RIGHT, ABE_TOP, ABM_GETTASKBARPOS, APPBARDATA,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    SetWindowPos, ShowWindow, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
-    SW_SHOWNOACTIVATE,
+    IsWindowVisible, SetWindowPos, ShowWindow, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE,
+    SWP_NOSIZE, SWP_SHOWWINDOW, SW_SHOWNOACTIVATE,
 };
 
 const COMPACT_WIDTH: u32 = 560;
@@ -77,18 +77,15 @@ pub fn reassert_visible_topmost(window: &WebviewWindow) -> Result<(), String> {
     let hwnd = window.hwnd().map_err(|error| error.to_string())?.0 as _;
 
     unsafe {
-        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        let visible = IsWindowVisible(hwnd) != 0;
+        if visible {
+            ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        }
 
-        if SetWindowPos(
-            hwnd,
-            HWND_TOPMOST,
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
-        ) == 0
-        {
+        let flags =
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | if visible { SWP_SHOWWINDOW } else { 0 };
+
+        if SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags) == 0 {
             return Err("SetWindowPos(HWND_TOPMOST) failed for taskbar overlay".into());
         }
     }

@@ -12,7 +12,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::lyrics::{fetch_synced_lyrics, synchronize, LyricLine, LyricsState, LyricsStatus};
 
-const WIDGET_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const WIDGET_IDLE_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 const VISIBILITY_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -275,7 +275,11 @@ pub fn spawn_media_session_worker(app: AppHandle, state: Arc<Mutex<MediaState>>)
                             None
                         };
 
-                        let should_show = if !current_state.title.is_empty() {
+                        let should_show = if !current_state.title.is_empty()
+                            && current_state
+                                .playback_status
+                                .eq_ignore_ascii_case("playing")
+                        {
                             worker.no_active_track_since = None;
                             if worker.widget_hidden {
                                 worker.widget_hidden = false;
@@ -420,7 +424,10 @@ fn update_session(
             None
         };
 
-        let should_show = if is_active && !media_state.title.is_empty() {
+        let should_show = if is_active
+            && !media_state.title.is_empty()
+            && media_state.playback_status.eq_ignore_ascii_case("playing")
+        {
             worker.no_active_track_since = None;
             if worker.widget_hidden {
                 worker.widget_hidden = false;
@@ -660,7 +667,9 @@ fn should_hide_idle_widget(worker: &mut WorkerState, now: Instant) -> bool {
     let has_active_track = worker
         .active_session_id
         .and_then(|session_id| worker.sessions.get(&session_id))
-        .is_some_and(|state| !state.title.is_empty());
+        .is_some_and(|state| {
+            !state.title.is_empty() && state.playback_status.eq_ignore_ascii_case("playing")
+        });
 
     if has_active_track {
         worker.no_active_track_since = None;
@@ -890,18 +899,40 @@ mod tests {
     }
 
     #[test]
-    fn idle_widget_hides_only_after_five_minutes_without_an_active_track() {
+    fn idle_widget_hides_only_after_two_minutes_without_an_active_track() {
         let mut worker = WorkerState::default();
         let start = Instant::now();
 
         assert!(!should_hide_idle_widget(&mut worker, start));
         assert!(!should_hide_idle_widget(
             &mut worker,
-            start + Duration::from_secs(299)
+            start + Duration::from_secs(119)
         ));
         assert!(should_hide_idle_widget(
             &mut worker,
-            start + Duration::from_secs(300)
+            start + Duration::from_secs(120)
+        ));
+    }
+
+    #[test]
+    fn paused_track_becomes_idle_after_two_minutes() {
+        let mut worker = WorkerState::default();
+        worker.active_session_id = Some(7);
+        worker.sessions.insert(
+            7,
+            MediaState {
+                track_id: Some("7".into()),
+                title: "Paused song".into(),
+                playback_status: "Paused".into(),
+                ..MediaState::default()
+            },
+        );
+        let start = Instant::now();
+
+        assert!(!should_hide_idle_widget(&mut worker, start));
+        assert!(should_hide_idle_widget(
+            &mut worker,
+            start + Duration::from_secs(120)
         ));
     }
 }

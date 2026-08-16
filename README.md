@@ -18,7 +18,7 @@ It is designed for listening without repeatedly switching back to Spotify or ano
 - Expands into a lyric context view when clicked.
 - Shows previous, current, and next synchronized lyric lines.
 - Provides previous track, play/pause, and next track controls.
-- Keeps the overlay visible while playback is paused.
+- Keeps the overlay visible briefly while paused, then hides it after two minutes without playback.
 - Handles loading, unavailable, and provider-error lyric states gracefully.
 - Uses Rust for Windows integration and React/TypeScript for presentation.
 - Does not inject into or modify Windows Explorer.
