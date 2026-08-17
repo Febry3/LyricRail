@@ -68,13 +68,13 @@ mod tests {
     }
 
     #[test]
-    fn fullscreen_taskbar_occlusion_detection_is_wired_into_visibility_polling() {
+    fn taskbar_visibility_detection_is_wired_into_visibility_polling() {
         let taskbar_source = include_str!("taskbar.rs");
         let media_source = include_str!("media/session.rs");
 
-        assert!(taskbar_source.contains("GetForegroundWindow"));
-        assert!(taskbar_source.contains("foreground_window_covers_taskbar_except"));
-        assert!(media_source.contains("foreground_window_covers_taskbar_except"));
+        assert!(taskbar_source.contains("taskbar_is_visible"));
+        assert!(taskbar_source.contains("IsWindowVisible"));
+        assert!(media_source.contains("taskbar_is_visible"));
     }
 }
 

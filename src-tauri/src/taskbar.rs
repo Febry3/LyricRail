@@ -8,13 +8,12 @@ use std::{
 };
 
 use tauri::{PhysicalPosition, PhysicalSize, Position, WebviewWindow, WindowEvent};
-use windows_sys::Win32::Foundation::RECT;
 use windows_sys::Win32::UI::Shell::{
     SHAppBarMessage, ABE_BOTTOM, ABE_LEFT, ABE_RIGHT, ABE_TOP, ABM_GETTASKBARPOS, APPBARDATA,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, GetWindowRect, IsWindowVisible, SetWindowPos, ShowWindow, HWND_TOPMOST,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_SHOWNOACTIVATE,
+    IsWindowVisible, SetWindowPos, ShowWindow, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE,
+    SWP_NOSIZE, SWP_SHOWWINDOW, SW_SHOWNOACTIVATE,
 };
 
 const COMPACT_WIDTH: u32 = 560;
@@ -94,51 +93,12 @@ pub fn reassert_visible_topmost(window: &WebviewWindow) -> Result<(), String> {
     Ok(())
 }
 
-pub fn foreground_window_covers_taskbar_except(excluded_window: Option<isize>) -> bool {
+pub fn taskbar_is_visible() -> bool {
     let Ok(taskbar) = taskbar_bounds() else {
         return false;
     };
 
-    let foreground_window = unsafe { GetForegroundWindow() };
-    if foreground_window.is_null() {
-        return false;
-    }
-    let foreground_handle = foreground_window as isize;
-    if Some(foreground_handle) == excluded_window || foreground_handle == taskbar.window_handle {
-        return false;
-    }
-
-    let mut foreground_rect = RECT::default();
-    if unsafe { GetWindowRect(foreground_window, &mut foreground_rect) } == 0 {
-        return false;
-    }
-
-    rectangles_intersect(
-        foreground_rect.left,
-        foreground_rect.top,
-        foreground_rect.right,
-        foreground_rect.bottom,
-        taskbar.left,
-        taskbar.top,
-        taskbar.right,
-        taskbar.bottom,
-    )
-}
-
-fn rectangles_intersect(
-    first_left: i32,
-    first_top: i32,
-    first_right: i32,
-    first_bottom: i32,
-    second_left: i32,
-    second_top: i32,
-    second_right: i32,
-    second_bottom: i32,
-) -> bool {
-    first_left < second_right
-        && first_right > second_left
-        && first_top < second_bottom
-        && first_bottom > second_top
+    unsafe { IsWindowVisible(taskbar.window_handle as _) != 0 }
 }
 
 fn position_window(
@@ -232,9 +192,8 @@ pub fn normalize_compact_width(width: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_compact_width, placement_for_taskbar, rectangles_intersect, TaskbarBounds,
-        COMPACT_HEIGHT, COMPACT_WIDTH, EXPANDED_HEIGHT, MAX_COMPACT_WIDTH, MIN_COMPACT_WIDTH,
-        TASKBAR_INSET,
+        normalize_compact_width, placement_for_taskbar, TaskbarBounds, COMPACT_HEIGHT,
+        COMPACT_WIDTH, EXPANDED_HEIGHT, MAX_COMPACT_WIDTH, MIN_COMPACT_WIDTH, TASKBAR_INSET,
     };
     use windows_sys::Win32::UI::Shell::{ABE_BOTTOM, ABE_LEFT, ABE_RIGHT, ABE_TOP};
 
@@ -328,15 +287,5 @@ mod tests {
         assert_eq!(normalize_compact_width(280), MIN_COMPACT_WIDTH);
         assert_eq!(normalize_compact_width(560), 560);
         assert_eq!(normalize_compact_width(900), MAX_COMPACT_WIDTH);
-    }
-
-    #[test]
-    fn fullscreen_foreground_window_intersects_bottom_taskbar() {
-        assert!(rectangles_intersect(0, 0, 1920, 1080, 0, 1020, 1920, 1080));
-    }
-
-    #[test]
-    fn maximized_work_area_stops_before_bottom_taskbar() {
-        assert!(!rectangles_intersect(0, 0, 1920, 1020, 0, 1020, 1920, 1080));
     }
 }

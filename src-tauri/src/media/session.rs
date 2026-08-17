@@ -170,12 +170,7 @@ pub fn spawn_media_session_worker(app: AppHandle, state: Arc<Mutex<MediaState>>)
         tauri::async_runtime::spawn(async move {
             loop {
                 tokio::time::sleep(VISIBILITY_POLL_INTERVAL).await;
-                let main_window_handle = visibility_app
-                    .get_webview_window("main")
-                    .and_then(|window| window.hwnd().ok())
-                    .map(|hwnd| hwnd.0 as isize);
-                let taskbar_covered =
-                    taskbar::foreground_window_covers_taskbar_except(main_window_handle);
+                let taskbar_covered = !taskbar::taskbar_is_visible();
                 let taskbar_visibility = with_worker_state(&visibility_worker_state, |worker| {
                     reconcile_taskbar_occlusion(worker, taskbar_covered)
                 })
@@ -762,9 +757,7 @@ fn set_widget_visibility(app: &AppHandle, visible: bool) {
         return;
     };
 
-    let main_window_handle = window.hwnd().ok().map(|hwnd| hwnd.0 as isize);
-    let result = if visible && !taskbar::foreground_window_covers_taskbar_except(main_window_handle)
-    {
+    let result = if visible && taskbar::taskbar_is_visible() {
         window.show()
     } else {
         window.hide()
