@@ -8,12 +8,14 @@ use std::{
 };
 
 use tauri::{PhysicalPosition, PhysicalSize, Position, WebviewWindow, WindowEvent};
+use windows_sys::Win32::Foundation::RECT;
 use windows_sys::Win32::UI::Shell::{
     SHAppBarMessage, ABE_BOTTOM, ABE_LEFT, ABE_RIGHT, ABE_TOP, ABM_GETTASKBARPOS, APPBARDATA,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, IsWindowVisible, SetWindowPos, ShowWindow, HWND_TOPMOST, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_SHOWNOACTIVATE,
+    FindWindowW, GetForegroundWindow, GetWindow, GetWindowLongPtrW, GetWindowRect, IsWindowVisible,
+    SetWindowPos, ShowWindow, GWL_EXSTYLE, GW_HWNDPREV, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE,
+    SWP_NOSIZE, SWP_SHOWWINDOW, SW_SHOWNOACTIVATE, WS_EX_TOPMOST,
 };
 
 const COMPACT_WIDTH: u32 = 560;
@@ -98,13 +100,65 @@ pub fn taskbar_is_visible() -> bool {
         return false;
     };
 
-    unsafe { IsWindowVisible(taskbar_handle as _) != 0 }
+    if unsafe { IsWindowVisible(taskbar_handle as _) == 0 } {
+        return false;
+    }
+
+    let taskbar_ex_style = unsafe { GetWindowLongPtrW(taskbar_handle as _, GWL_EXSTYLE) };
+    if taskbar_ex_style & WS_EX_TOPMOST as isize == 0 {
+        return false;
+    }
+
+    let Ok(taskbar) = taskbar_bounds() else {
+        return false;
+    };
+    let foreground = unsafe { GetForegroundWindow() };
+    if foreground.is_null() || foreground as isize == taskbar_handle {
+        return true;
+    }
+
+    let mut foreground_rect = RECT::default();
+    if unsafe { GetWindowRect(foreground, &mut foreground_rect) == 0 } {
+        return true;
+    }
+
+    let foreground_above_taskbar = window_is_above_taskbar(foreground, taskbar_handle);
+    !foreground_window_covers_taskbar(taskbar, foreground_rect, foreground_above_taskbar)
 }
 
 fn taskbar_window_handle() -> Option<isize> {
     let handle = unsafe { FindWindowW(windows_sys::w!("Shell_TrayWnd"), std::ptr::null()) };
 
     (!handle.is_null()).then_some(handle as isize)
+}
+
+fn window_is_above_taskbar(foreground: *mut core::ffi::c_void, taskbar: isize) -> bool {
+    let mut current = taskbar as _;
+
+    for _ in 0..128 {
+        let previous = unsafe { GetWindow(current, GW_HWNDPREV) };
+        if previous.is_null() {
+            return false;
+        }
+        if previous == foreground {
+            return true;
+        }
+        current = previous;
+    }
+
+    false
+}
+
+fn foreground_window_covers_taskbar(
+    taskbar: TaskbarBounds,
+    foreground: RECT,
+    foreground_above_taskbar: bool,
+) -> bool {
+    foreground_above_taskbar
+        && foreground.left < taskbar.right
+        && taskbar.left < foreground.right
+        && foreground.top < taskbar.bottom
+        && taskbar.top < foreground.bottom
 }
 
 fn position_window(
@@ -196,9 +250,11 @@ pub fn normalize_compact_width(width: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_compact_width, placement_for_taskbar, TaskbarBounds, COMPACT_HEIGHT,
-        COMPACT_WIDTH, EXPANDED_HEIGHT, MAX_COMPACT_WIDTH, MIN_COMPACT_WIDTH, TASKBAR_INSET,
+        foreground_window_covers_taskbar, normalize_compact_width, placement_for_taskbar,
+        TaskbarBounds, COMPACT_HEIGHT, COMPACT_WIDTH, EXPANDED_HEIGHT, MAX_COMPACT_WIDTH,
+        MIN_COMPACT_WIDTH, TASKBAR_INSET,
     };
+    use windows_sys::Win32::Foundation::RECT;
     use windows_sys::Win32::UI::Shell::{ABE_BOTTOM, ABE_LEFT, ABE_RIGHT, ABE_TOP};
 
     #[test]
@@ -286,5 +342,45 @@ mod tests {
         assert_eq!(normalize_compact_width(280), MIN_COMPACT_WIDTH);
         assert_eq!(normalize_compact_width(560), 560);
         assert_eq!(normalize_compact_width(900), MAX_COMPACT_WIDTH);
+    }
+
+    #[test]
+    fn fullscreen_foreground_above_taskbar_hides_widget() {
+        let taskbar = TaskbarBounds {
+            left: 0,
+            top: 1020,
+            right: 1920,
+            bottom: 1080,
+            edge: ABE_BOTTOM,
+        };
+        let foreground = RECT {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        };
+
+        assert!(foreground_window_covers_taskbar(taskbar, foreground, true));
+    }
+
+    #[test]
+    fn foreground_below_taskbar_does_not_hide_widget() {
+        let taskbar = TaskbarBounds {
+            left: 0,
+            top: 1020,
+            right: 1920,
+            bottom: 1080,
+            edge: ABE_BOTTOM,
+        };
+        let foreground = RECT {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        };
+
+        assert!(!foreground_window_covers_taskbar(
+            taskbar, foreground, false
+        ));
     }
 }

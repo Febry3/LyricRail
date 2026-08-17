@@ -68,6 +68,16 @@ mod tests {
     }
 
     #[test]
+    fn compact_lyrics_have_a_safe_vertical_line_box() {
+        let style_source = include_str!("../../src/App.css");
+
+        assert!(style_source.contains(".lyric-focus {"));
+        assert!(style_source.contains("min-height: 18px;"));
+        assert!(style_source.contains("line-height: 1.2;"));
+        assert!(style_source.contains("transform: translateY(1px);"));
+    }
+
+    #[test]
     fn taskbar_visibility_detection_is_wired_into_visibility_polling() {
         let taskbar_source = include_str!("taskbar.rs");
         let media_source = include_str!("media/session.rs");
@@ -76,6 +86,12 @@ mod tests {
         assert!(taskbar_source.contains("IsWindowVisible"));
         assert!(taskbar_source.contains("FindWindowW"));
         assert!(taskbar_source.contains("Shell_TrayWnd"));
+        assert!(taskbar_source.contains("GetForegroundWindow"));
+        assert!(taskbar_source.contains("GetWindow"));
+        assert!(taskbar_source.contains("GW_HWNDPREV"));
+        assert!(taskbar_source.contains("let mut current = taskbar as _;"));
+        assert!(taskbar_source.contains("GetWindowLongPtrW"));
+        assert!(taskbar_source.contains("WS_EX_TOPMOST"));
         assert!(media_source.contains("taskbar_is_visible"));
     }
 }
