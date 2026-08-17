@@ -10,7 +10,10 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tracing::{debug, error, info, warn};
 
-use crate::lyrics::{fetch_synced_lyrics, synchronize, LyricLine, LyricsState, LyricsStatus};
+use crate::{
+    lyrics::{fetch_synced_lyrics, synchronize, LyricLine, LyricsState, LyricsStatus},
+    taskbar,
+};
 
 const WIDGET_IDLE_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 const VISIBILITY_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -119,6 +122,7 @@ struct WorkerState {
     timeline_samples: HashMap<usize, TimelineSample>,
     no_active_track_since: Option<Instant>,
     widget_hidden: bool,
+    taskbar_hidden: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -166,6 +170,16 @@ pub fn spawn_media_session_worker(app: AppHandle, state: Arc<Mutex<MediaState>>)
         tauri::async_runtime::spawn(async move {
             loop {
                 tokio::time::sleep(VISIBILITY_POLL_INTERVAL).await;
+                let main_window_handle = visibility_app
+                    .get_webview_window("main")
+                    .and_then(|window| window.hwnd().ok())
+                    .map(|hwnd| hwnd.0 as isize);
+                let taskbar_covered =
+                    taskbar::foreground_window_covers_taskbar_except(main_window_handle);
+                let taskbar_visibility = with_worker_state(&visibility_worker_state, |worker| {
+                    reconcile_taskbar_occlusion(worker, taskbar_covered)
+                })
+                .unwrap_or(None);
                 let should_show = with_worker_state(&visibility_worker_state, |worker| {
                     should_show_idle_widget(worker)
                 })
@@ -175,10 +189,12 @@ pub fn spawn_media_session_worker(app: AppHandle, state: Arc<Mutex<MediaState>>)
                 })
                 .unwrap_or(false);
 
-                if should_show {
-                    set_widget_visibility(&visibility_app, true);
-                } else if should_hide {
-                    set_widget_visibility(&visibility_app, false);
+                match taskbar_visibility {
+                    Some(false) => set_widget_visibility(&visibility_app, false),
+                    Some(true) => set_widget_visibility(&visibility_app, true),
+                    None if should_show => set_widget_visibility(&visibility_app, true),
+                    None if should_hide => set_widget_visibility(&visibility_app, false),
+                    _ => {}
                 }
             }
         });
@@ -711,6 +727,22 @@ fn should_show_idle_widget(worker: &mut WorkerState) -> bool {
     worker.widget_hidden && mark_playing_session_active(worker)
 }
 
+fn reconcile_taskbar_occlusion(worker: &mut WorkerState, covered: bool) -> Option<bool> {
+    if covered {
+        if worker.taskbar_hidden {
+            None
+        } else {
+            worker.taskbar_hidden = true;
+            Some(false)
+        }
+    } else if worker.taskbar_hidden {
+        worker.taskbar_hidden = false;
+        (!worker.widget_hidden).then_some(true)
+    } else {
+        None
+    }
+}
+
 fn should_hide_idle_widget(worker: &mut WorkerState, now: Instant) -> bool {
     if mark_playing_session_active(worker) {
         return false;
@@ -730,7 +762,9 @@ fn set_widget_visibility(app: &AppHandle, visible: bool) {
         return;
     };
 
-    let result = if visible {
+    let main_window_handle = window.hwnd().ok().map(|hwnd| hwnd.0 as isize);
+    let result = if visible && !taskbar::foreground_window_covers_taskbar_except(main_window_handle)
+    {
         window.show()
     } else {
         window.hide()
@@ -1014,5 +1048,25 @@ mod tests {
         assert_eq!(worker.active_session_id, Some(7));
         assert!(!worker.widget_hidden);
         assert!(!should_hide_idle_widget(&mut worker, Instant::now()));
+    }
+
+    #[test]
+    fn fullscreen_occlusion_hides_then_restores_an_active_widget() {
+        let mut worker = WorkerState::default();
+
+        assert_eq!(reconcile_taskbar_occlusion(&mut worker, true), Some(false));
+        assert_eq!(reconcile_taskbar_occlusion(&mut worker, true), None);
+        assert_eq!(reconcile_taskbar_occlusion(&mut worker, false), Some(true));
+    }
+
+    #[test]
+    fn fullscreen_exit_does_not_restore_an_idle_hidden_widget() {
+        let mut worker = WorkerState {
+            widget_hidden: true,
+            ..WorkerState::default()
+        };
+
+        assert_eq!(reconcile_taskbar_occlusion(&mut worker, true), Some(false));
+        assert_eq!(reconcile_taskbar_occlusion(&mut worker, false), None);
     }
 }

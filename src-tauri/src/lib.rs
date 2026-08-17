@@ -66,6 +66,16 @@ mod tests {
         assert!(app_source.contains("media-strip--transparent"));
         assert!(style_source.contains(".media-strip--transparent"));
     }
+
+    #[test]
+    fn fullscreen_taskbar_occlusion_detection_is_wired_into_visibility_polling() {
+        let taskbar_source = include_str!("taskbar.rs");
+        let media_source = include_str!("media/session.rs");
+
+        assert!(taskbar_source.contains("GetForegroundWindow"));
+        assert!(taskbar_source.contains("foreground_window_covers_taskbar_except"));
+        assert!(media_source.contains("foreground_window_covers_taskbar_except"));
+    }
 }
 
 #[tauri::command]

@@ -8,12 +8,13 @@ use std::{
 };
 
 use tauri::{PhysicalPosition, PhysicalSize, Position, WebviewWindow, WindowEvent};
+use windows_sys::Win32::Foundation::RECT;
 use windows_sys::Win32::UI::Shell::{
     SHAppBarMessage, ABE_BOTTOM, ABE_LEFT, ABE_RIGHT, ABE_TOP, ABM_GETTASKBARPOS, APPBARDATA,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    IsWindowVisible, SetWindowPos, ShowWindow, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOSIZE, SWP_SHOWWINDOW, SW_SHOWNOACTIVATE,
+    GetForegroundWindow, GetWindowRect, IsWindowVisible, SetWindowPos, ShowWindow, HWND_TOPMOST,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_SHOWNOACTIVATE,
 };
 
 const COMPACT_WIDTH: u32 = 560;
@@ -93,6 +94,53 @@ pub fn reassert_visible_topmost(window: &WebviewWindow) -> Result<(), String> {
     Ok(())
 }
 
+pub fn foreground_window_covers_taskbar_except(excluded_window: Option<isize>) -> bool {
+    let Ok(taskbar) = taskbar_bounds() else {
+        return false;
+    };
+
+    let foreground_window = unsafe { GetForegroundWindow() };
+    if foreground_window.is_null() {
+        return false;
+    }
+    let foreground_handle = foreground_window as isize;
+    if Some(foreground_handle) == excluded_window || foreground_handle == taskbar.window_handle {
+        return false;
+    }
+
+    let mut foreground_rect = RECT::default();
+    if unsafe { GetWindowRect(foreground_window, &mut foreground_rect) } == 0 {
+        return false;
+    }
+
+    rectangles_intersect(
+        foreground_rect.left,
+        foreground_rect.top,
+        foreground_rect.right,
+        foreground_rect.bottom,
+        taskbar.left,
+        taskbar.top,
+        taskbar.right,
+        taskbar.bottom,
+    )
+}
+
+fn rectangles_intersect(
+    first_left: i32,
+    first_top: i32,
+    first_right: i32,
+    first_bottom: i32,
+    second_left: i32,
+    second_top: i32,
+    second_right: i32,
+    second_bottom: i32,
+) -> bool {
+    first_left < second_right
+        && first_right > second_left
+        && first_top < second_bottom
+        && first_bottom > second_top
+}
+
 fn position_window(
     window: &WebviewWindow,
     height: u32,
@@ -118,6 +166,7 @@ struct TaskbarBounds {
     right: i32,
     bottom: i32,
     edge: u32,
+    window_handle: isize,
 }
 
 fn placement_for_taskbar(
@@ -172,6 +221,7 @@ fn taskbar_bounds() -> Result<TaskbarBounds, String> {
         right: appbar.rc.right,
         bottom: appbar.rc.bottom,
         edge: appbar.uEdge,
+        window_handle: appbar.hWnd as isize,
     })
 }
 
@@ -182,8 +232,9 @@ pub fn normalize_compact_width(width: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_compact_width, placement_for_taskbar, TaskbarBounds, COMPACT_HEIGHT,
-        COMPACT_WIDTH, EXPANDED_HEIGHT, MAX_COMPACT_WIDTH, MIN_COMPACT_WIDTH, TASKBAR_INSET,
+        normalize_compact_width, placement_for_taskbar, rectangles_intersect, TaskbarBounds,
+        COMPACT_HEIGHT, COMPACT_WIDTH, EXPANDED_HEIGHT, MAX_COMPACT_WIDTH, MIN_COMPACT_WIDTH,
+        TASKBAR_INSET,
     };
     use windows_sys::Win32::UI::Shell::{ABE_BOTTOM, ABE_LEFT, ABE_RIGHT, ABE_TOP};
 
@@ -195,6 +246,7 @@ mod tests {
             right: 1920,
             bottom: 1080,
             edge: ABE_BOTTOM,
+            window_handle: 0,
         };
 
         let placement = placement_for_taskbar(taskbar, COMPACT_HEIGHT, true).unwrap();
@@ -212,6 +264,7 @@ mod tests {
             right: 1920,
             bottom: 1080,
             edge: ABE_BOTTOM,
+            window_handle: 0,
         };
 
         let placement = placement_for_taskbar(taskbar, COMPACT_HEIGHT, true).unwrap();
@@ -227,6 +280,7 @@ mod tests {
             right: 1920,
             bottom: 40,
             edge: ABE_TOP,
+            window_handle: 0,
         };
 
         let placement = placement_for_taskbar(taskbar, EXPANDED_HEIGHT, false).unwrap();
@@ -242,6 +296,7 @@ mod tests {
             right: 56,
             bottom: 1080,
             edge: ABE_LEFT,
+            window_handle: 0,
         };
 
         let placement = placement_for_taskbar(taskbar, COMPACT_HEIGHT, true).unwrap();
@@ -257,6 +312,7 @@ mod tests {
             right: 1920,
             bottom: 1080,
             edge: ABE_RIGHT,
+            window_handle: 0,
         };
 
         let placement = placement_for_taskbar(taskbar, COMPACT_HEIGHT, true).unwrap();
@@ -272,5 +328,15 @@ mod tests {
         assert_eq!(normalize_compact_width(280), MIN_COMPACT_WIDTH);
         assert_eq!(normalize_compact_width(560), 560);
         assert_eq!(normalize_compact_width(900), MAX_COMPACT_WIDTH);
+    }
+
+    #[test]
+    fn fullscreen_foreground_window_intersects_bottom_taskbar() {
+        assert!(rectangles_intersect(0, 0, 1920, 1080, 0, 1020, 1920, 1080));
+    }
+
+    #[test]
+    fn maximized_work_area_stops_before_bottom_taskbar() {
+        assert!(!rectangles_intersect(0, 0, 1920, 1020, 0, 1020, 1920, 1080));
     }
 }
