@@ -74,6 +74,8 @@ mod tests {
 
         assert!(taskbar_source.contains("taskbar_is_visible"));
         assert!(taskbar_source.contains("IsWindowVisible"));
+        assert!(taskbar_source.contains("FindWindowW"));
+        assert!(taskbar_source.contains("Shell_TrayWnd"));
         assert!(media_source.contains("taskbar_is_visible"));
     }
 }

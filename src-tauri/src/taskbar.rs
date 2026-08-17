@@ -12,8 +12,8 @@ use windows_sys::Win32::UI::Shell::{
     SHAppBarMessage, ABE_BOTTOM, ABE_LEFT, ABE_RIGHT, ABE_TOP, ABM_GETTASKBARPOS, APPBARDATA,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    IsWindowVisible, SetWindowPos, ShowWindow, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOSIZE, SWP_SHOWWINDOW, SW_SHOWNOACTIVATE,
+    FindWindowW, IsWindowVisible, SetWindowPos, ShowWindow, HWND_TOPMOST, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_SHOWNOACTIVATE,
 };
 
 const COMPACT_WIDTH: u32 = 560;
@@ -94,11 +94,17 @@ pub fn reassert_visible_topmost(window: &WebviewWindow) -> Result<(), String> {
 }
 
 pub fn taskbar_is_visible() -> bool {
-    let Ok(taskbar) = taskbar_bounds() else {
+    let Some(taskbar_handle) = taskbar_window_handle() else {
         return false;
     };
 
-    unsafe { IsWindowVisible(taskbar.window_handle as _) != 0 }
+    unsafe { IsWindowVisible(taskbar_handle as _) != 0 }
+}
+
+fn taskbar_window_handle() -> Option<isize> {
+    let handle = unsafe { FindWindowW(windows_sys::w!("Shell_TrayWnd"), std::ptr::null()) };
+
+    (!handle.is_null()).then_some(handle as isize)
 }
 
 fn position_window(
@@ -126,7 +132,6 @@ struct TaskbarBounds {
     right: i32,
     bottom: i32,
     edge: u32,
-    window_handle: isize,
 }
 
 fn placement_for_taskbar(
@@ -181,7 +186,6 @@ fn taskbar_bounds() -> Result<TaskbarBounds, String> {
         right: appbar.rc.right,
         bottom: appbar.rc.bottom,
         edge: appbar.uEdge,
-        window_handle: appbar.hWnd as isize,
     })
 }
 
@@ -205,7 +209,6 @@ mod tests {
             right: 1920,
             bottom: 1080,
             edge: ABE_BOTTOM,
-            window_handle: 0,
         };
 
         let placement = placement_for_taskbar(taskbar, COMPACT_HEIGHT, true).unwrap();
@@ -223,7 +226,6 @@ mod tests {
             right: 1920,
             bottom: 1080,
             edge: ABE_BOTTOM,
-            window_handle: 0,
         };
 
         let placement = placement_for_taskbar(taskbar, COMPACT_HEIGHT, true).unwrap();
@@ -239,7 +241,6 @@ mod tests {
             right: 1920,
             bottom: 40,
             edge: ABE_TOP,
-            window_handle: 0,
         };
 
         let placement = placement_for_taskbar(taskbar, EXPANDED_HEIGHT, false).unwrap();
@@ -255,7 +256,6 @@ mod tests {
             right: 56,
             bottom: 1080,
             edge: ABE_LEFT,
-            window_handle: 0,
         };
 
         let placement = placement_for_taskbar(taskbar, COMPACT_HEIGHT, true).unwrap();
@@ -271,7 +271,6 @@ mod tests {
             right: 1920,
             bottom: 1080,
             edge: ABE_RIGHT,
-            window_handle: 0,
         };
 
         let placement = placement_for_taskbar(taskbar, COMPACT_HEIGHT, true).unwrap();
