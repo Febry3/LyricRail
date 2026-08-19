@@ -94,6 +94,25 @@ mod tests {
         assert!(taskbar_source.contains("WS_EX_TOPMOST"));
         assert!(media_source.contains("taskbar_is_visible"));
     }
+
+    #[test]
+    fn lyrics_use_boundary_scheduling_instead_of_fixed_polling() {
+        let media_source = include_str!("media/session.rs");
+
+        assert!(media_source.contains("next_lyric_delay"));
+        assert!(media_source.contains("Notify"));
+        assert!(!media_source.contains("Duration::from_millis(50)"));
+    }
+
+    #[test]
+    fn release_profile_enables_binary_optimizations() {
+        let cargo_source = include_str!("../Cargo.toml");
+
+        assert!(cargo_source.contains("[profile.release]"));
+        assert!(cargo_source.contains("lto = \"thin\""));
+        assert!(cargo_source.contains("codegen-units = 1"));
+        assert!(cargo_source.contains("strip = \"symbols\""));
+    }
 }
 
 #[tauri::command]

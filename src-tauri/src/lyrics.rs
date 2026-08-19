@@ -1,13 +1,20 @@
-use std::{fmt, time::Duration};
+use std::{
+    collections::HashMap,
+    fmt,
+    sync::{Mutex, OnceLock},
+    time::{Duration, Instant},
+};
 
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 
 const LRCLIB_SEARCH_URL: &str = "https://lrclib.net/api/search";
 const LRCLIB_GET_URL: &str = "https://lrclib.net/api/get";
-const LRCLIB_USER_AGENT: &str = "TaskbarLyricsPlayer/0.1.0";
+const LRCLIB_USER_AGENT: &str = "TaskbarLyricsPlayer/0.1.3";
 const LRCLIB_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_DURATION_DRIFT_SECONDS: f64 = 15.0;
+const LYRICS_CACHE_CAPACITY: usize = 32;
+const LYRICS_CACHE_TTL: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -101,6 +108,101 @@ impl fmt::Display for LyricsFetchError {
 }
 
 impl std::error::Error for LyricsFetchError {}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct LyricsCacheKey {
+    title: String,
+    artist: String,
+    album: String,
+    duration_ms: u64,
+}
+
+impl LyricsCacheKey {
+    fn new(title: &str, artist: &str, album: Option<&str>, duration_ms: u64) -> Self {
+        Self {
+            title: normalize_for_match(title),
+            artist: normalize_for_match(artist),
+            album: album.map(normalize_for_match).unwrap_or_default(),
+            duration_ms,
+        }
+    }
+}
+
+struct LyricsCacheEntry {
+    lyrics: Option<Vec<LyricLine>>,
+    cached_at: Instant,
+}
+
+struct LyricsCache {
+    capacity: usize,
+    ttl: Duration,
+    entries: HashMap<LyricsCacheKey, LyricsCacheEntry>,
+}
+
+impl LyricsCache {
+    fn new(capacity: usize, ttl: Duration) -> Self {
+        Self {
+            capacity,
+            ttl,
+            entries: HashMap::new(),
+        }
+    }
+
+    fn get(&mut self, key: &LyricsCacheKey, now: Instant) -> Option<Option<Vec<LyricLine>>> {
+        let is_expired = self
+            .entries
+            .get(key)
+            .is_some_and(|entry| now.saturating_duration_since(entry.cached_at) >= self.ttl);
+        if is_expired {
+            self.entries.remove(key);
+            return None;
+        }
+
+        self.entries.get(key).map(|entry| entry.lyrics.clone())
+    }
+
+    fn insert(&mut self, key: LyricsCacheKey, lyrics: Option<Vec<LyricLine>>, now: Instant) {
+        if self.capacity == 0 {
+            return;
+        }
+
+        if self.entries.len() >= self.capacity && !self.entries.contains_key(&key) {
+            if let Some(oldest_key) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.cached_at)
+                .map(|(key, _)| key.clone())
+            {
+                self.entries.remove(&oldest_key);
+            }
+        }
+
+        self.entries.insert(
+            key,
+            LyricsCacheEntry {
+                lyrics,
+                cached_at: now,
+            },
+        );
+    }
+}
+
+static LYRICS_CACHE: OnceLock<Mutex<LyricsCache>> = OnceLock::new();
+
+fn lyrics_cache() -> &'static Mutex<LyricsCache> {
+    LYRICS_CACHE
+        .get_or_init(|| Mutex::new(LyricsCache::new(LYRICS_CACHE_CAPACITY, LYRICS_CACHE_TTL)))
+}
+
+fn cached_lyrics(key: &LyricsCacheKey) -> Option<Option<Vec<LyricLine>>> {
+    lyrics_cache().lock().ok()?.get(key, Instant::now())
+}
+
+fn store_cached_lyrics(key: LyricsCacheKey, lyrics: Option<Vec<LyricLine>>) {
+    if let Ok(mut cache) = lyrics_cache().lock() {
+        cache.insert(key, lyrics, Instant::now());
+    }
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -203,6 +305,24 @@ pub fn synchronize(lines: &[LyricLine], position_ms: u64) -> LyricsContext {
 }
 
 pub async fn fetch_synced_lyrics(
+    title: &str,
+    artist: &str,
+    album: Option<&str>,
+    duration_ms: u64,
+) -> Result<Option<Vec<LyricLine>>, LyricsFetchError> {
+    let cache_key = LyricsCacheKey::new(title, artist, album, duration_ms);
+    if let Some(cached) = cached_lyrics(&cache_key) {
+        return Ok(cached);
+    }
+
+    let result = fetch_synced_lyrics_uncached(title, artist, album, duration_ms).await;
+    if let Ok(lyrics) = &result {
+        store_cached_lyrics(cache_key, lyrics.clone());
+    }
+    result
+}
+
+async fn fetch_synced_lyrics_uncached(
     title: &str,
     artist: &str,
     album: Option<&str>,
@@ -414,8 +534,10 @@ fn is_metadata_suffix(value: &str) -> bool {
 mod tests {
     use super::{
         build_search_query, parse_lrc, resolve_records, resolve_search_or_exact,
-        select_best_record, synchronize, LrclibRecord, LyricsContext, LyricsState,
+        select_best_record, synchronize, LrclibRecord, LyricsCache, LyricsCacheKey, LyricsContext,
+        LyricsState,
     };
+    use std::time::{Duration, Instant};
 
     #[test]
     fn parses_and_sorts_lrc_timestamps() {
@@ -556,6 +678,49 @@ mod tests {
                 ("artist_name".to_owned(), "Jake Clark".to_owned()),
                 ("duration".to_owned(), "170.000".to_owned()),
             ]
+        );
+    }
+
+    #[test]
+    fn lyrics_cache_keeps_unavailable_results_and_expires_them() {
+        let mut cache = LyricsCache::new(2, Duration::from_secs(30));
+        let key = LyricsCacheKey::new("  Track (Remastered) ", "Artist", Some("Album"), 180_000);
+        let start = Instant::now();
+
+        cache.insert(key.clone(), None, start);
+
+        assert_eq!(cache.get(&key, start + Duration::from_secs(29)), Some(None));
+        assert_eq!(cache.get(&key, start + Duration::from_secs(31)), None);
+    }
+
+    #[test]
+    fn lyrics_cache_evicts_the_oldest_entry_at_capacity() {
+        let mut cache = LyricsCache::new(2, Duration::from_secs(30));
+        let first = LyricsCacheKey::new("First", "Artist", None, 100_000);
+        let second = LyricsCacheKey::new("Second", "Artist", None, 100_000);
+        let third = LyricsCacheKey::new("Third", "Artist", None, 100_000);
+        let start = Instant::now();
+
+        cache.insert(first.clone(), Some(Vec::new()), start);
+        cache.insert(
+            second.clone(),
+            Some(Vec::new()),
+            start + Duration::from_secs(1),
+        );
+        cache.insert(
+            third.clone(),
+            Some(Vec::new()),
+            start + Duration::from_secs(2),
+        );
+
+        assert_eq!(cache.get(&first, start + Duration::from_secs(3)), None);
+        assert_eq!(
+            cache.get(&second, start + Duration::from_secs(3)),
+            Some(Some(Vec::new()))
+        );
+        assert_eq!(
+            cache.get(&third, start + Duration::from_secs(3)),
+            Some(Some(Vec::new()))
         );
     }
 

@@ -8,6 +8,7 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use gsmtc::{ManagerEvent, SessionModel, SessionUpdateEvent};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
+use tokio::sync::Notify;
 use tracing::{debug, error, info, warn};
 
 use crate::{
@@ -17,6 +18,7 @@ use crate::{
 
 const WIDGET_IDLE_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 const VISIBILITY_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const MIN_LYRICS_WAKE_DELAY: Duration = Duration::from_millis(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -155,13 +157,29 @@ pub fn spawn_media_session_worker(app: AppHandle, state: Arc<Mutex<MediaState>>)
         };
 
         let worker_state = Arc::new(Mutex::new(WorkerState::default()));
+        let lyrics_updates = Arc::new(Notify::new());
         let ticker_app = app.clone();
         let ticker_state = Arc::clone(&state);
         let ticker_worker_state = Arc::clone(&worker_state);
+        let ticker_updates = Arc::clone(&lyrics_updates);
         tauri::async_runtime::spawn(async move {
             loop {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                tick_active_lyrics(&ticker_app, &ticker_state, &ticker_worker_state);
+                let wake_delay = next_lyrics_wake_delay(&ticker_worker_state);
+                match wake_delay {
+                    Some(wake_delay) => {
+                        tokio::select! {
+                            _ = tokio::time::sleep(wake_delay) => {
+                                tick_active_lyrics(&ticker_app, &ticker_state, &ticker_worker_state);
+                            }
+                            _ = ticker_updates.notified() => {
+                                tick_active_lyrics(&ticker_app, &ticker_state, &ticker_worker_state);
+                            }
+                        }
+                    }
+                    None => {
+                        ticker_updates.notified().await;
+                    }
+                }
             }
         });
 
@@ -170,11 +188,19 @@ pub fn spawn_media_session_worker(app: AppHandle, state: Arc<Mutex<MediaState>>)
         tauri::async_runtime::spawn(async move {
             loop {
                 tokio::time::sleep(VISIBILITY_POLL_INTERVAL).await;
-                let taskbar_covered = !taskbar::taskbar_is_visible();
-                let taskbar_visibility = with_worker_state(&visibility_worker_state, |worker| {
-                    reconcile_taskbar_occlusion(worker, taskbar_covered)
+                let should_poll_taskbar = with_worker_state(&visibility_worker_state, |worker| {
+                    should_poll_taskbar_visibility(worker)
                 })
-                .unwrap_or(None);
+                .unwrap_or(true);
+                let taskbar_visibility = if should_poll_taskbar {
+                    let taskbar_covered = !taskbar::taskbar_is_visible();
+                    with_worker_state(&visibility_worker_state, |worker| {
+                        reconcile_taskbar_occlusion(worker, taskbar_covered)
+                    })
+                    .unwrap_or(None)
+                } else {
+                    None
+                };
                 let should_show = with_worker_state(&visibility_worker_state, |worker| {
                     should_show_idle_widget(worker)
                 })
@@ -213,6 +239,7 @@ pub fn spawn_media_session_worker(app: AppHandle, state: Arc<Mutex<MediaState>>)
                     let app = app.clone();
                     let state = Arc::clone(&state);
                     let worker_state = Arc::clone(&worker_state);
+                    let lyrics_updates = Arc::clone(&lyrics_updates);
 
                     tauri::async_runtime::spawn(async move {
                         while let Some(event) = rx.recv().await {
@@ -226,6 +253,7 @@ pub fn spawn_media_session_worker(app: AppHandle, state: Arc<Mutex<MediaState>>)
                                 &app,
                                 &state,
                                 &worker_state,
+                                &lyrics_updates,
                                 session_id,
                                 model,
                                 artwork_url,
@@ -330,6 +358,7 @@ pub fn spawn_media_session_worker(app: AppHandle, state: Arc<Mutex<MediaState>>)
                                     app.clone(),
                                     Arc::clone(&state),
                                     Arc::clone(&worker_state),
+                                    Arc::clone(&lyrics_updates),
                                     request,
                                 );
                             }
@@ -341,6 +370,7 @@ pub fn spawn_media_session_worker(app: AppHandle, state: Arc<Mutex<MediaState>>)
                     }
                 }
             }
+            lyrics_updates.notify_one();
         }
 
         warn!("Windows media session manager event stream terminated");
@@ -352,11 +382,14 @@ fn update_session(
     app: &AppHandle,
     state: &Arc<Mutex<MediaState>>,
     worker_state: &Arc<Mutex<WorkerState>>,
+    lyrics_updates: &Arc<Notify>,
     session_id: usize,
     model: SessionModel,
     artwork_url: Option<Option<String>>,
 ) {
     let updated_session = with_worker_state(worker_state, |worker| {
+        let previous_session = worker.sessions.get(&session_id).cloned();
+        let was_active = worker.active_session_id == Some(session_id);
         let previous_artwork_url = worker
             .sessions
             .get(&session_id)
@@ -471,28 +504,58 @@ fn update_session(
             false
         };
 
+        let state_changed = media_state_update_changed(
+            previous_session.as_ref(),
+            &media_state,
+            was_active,
+            is_active,
+        );
         worker.sessions.insert(session_id, media_state.clone());
-        (is_active, media_state, lyrics_request, should_show)
+        (
+            is_active,
+            media_state,
+            lyrics_request,
+            should_show,
+            state_changed,
+        )
     });
 
+    let should_notify =
+        updated_session
+            .as_ref()
+            .ok()
+            .is_some_and(|(_, _, lyrics_request, _, state_changed)| {
+                *state_changed || lyrics_request.is_some()
+            });
+
     match updated_session {
-        Ok((true, media_state, lyrics_request, should_show)) => {
+        Ok((true, media_state, lyrics_request, should_show, state_changed)) => {
             debug!(session_id, title = %media_state.title, "active media state updated");
             if should_show {
                 set_widget_visibility(app, true);
             }
-            publish_state(app, state, media_state);
+            if state_changed {
+                publish_state(app, state, media_state);
+            }
             if let Some(request) = lyrics_request {
                 spawn_lyrics_fetch(
                     app.clone(),
                     Arc::clone(state),
                     Arc::clone(worker_state),
+                    Arc::clone(lyrics_updates),
                     request,
                 );
             }
         }
-        Ok((false, _, _, _)) => debug!(session_id, "inactive media session updated"),
+        Ok((false, _, _, _, state_changed)) => {
+            if state_changed {
+                debug!(session_id, "inactive media session updated");
+            }
+        }
         Err(()) => publish_state(app, state, MediaState::default()),
+    }
+    if should_notify {
+        lyrics_updates.notify_one();
     }
 }
 
@@ -521,6 +584,7 @@ fn spawn_lyrics_fetch(
     app: AppHandle,
     state: Arc<Mutex<MediaState>>,
     worker_state: Arc<Mutex<WorkerState>>,
+    lyrics_updates: Arc<Notify>,
     request: LyricsRequest,
 ) {
     tauri::async_runtime::spawn(async move {
@@ -563,7 +627,56 @@ fn spawn_lyrics_fetch(
         if let Some(updated_state) = updated_state {
             publish_state(&app, &state, updated_state);
         }
+        lyrics_updates.notify_one();
     });
+}
+
+fn next_lyrics_wake_delay(worker_state: &Arc<Mutex<WorkerState>>) -> Option<Duration> {
+    with_worker_state(worker_state, |worker| {
+        let Some(session_id) = worker.active_session_id else {
+            return None;
+        };
+        let Some(sample) = worker.timeline_samples.get(&session_id) else {
+            return None;
+        };
+        let Some(lines) = worker.lyrics_lines.get(&session_id) else {
+            return None;
+        };
+        let Some(media_state) = worker.sessions.get(&session_id) else {
+            return None;
+        };
+
+        if !media_state.playback_status.eq_ignore_ascii_case("playing") {
+            return None;
+        }
+
+        let elapsed_ms = sample
+            .sampled_at
+            .elapsed()
+            .as_millis()
+            .min(u64::MAX as u128) as u64;
+        let position_ms = projected_position_ms(
+            sample.position_ms,
+            media_state.duration_ms,
+            &media_state.playback_status,
+            elapsed_ms,
+        );
+
+        next_lyric_delay(lines, position_ms)
+    })
+    .unwrap_or(None)
+}
+
+fn next_lyric_delay(lines: &[LyricLine], position_ms: u64) -> Option<Duration> {
+    let next_timestamp = lines
+        .iter()
+        .find(|line| line.timestamp_ms > position_ms)
+        .map(|line| line.timestamp_ms)?;
+
+    Some(
+        Duration::from_millis(next_timestamp.saturating_sub(position_ms))
+            .max(MIN_LYRICS_WAKE_DELAY),
+    )
 }
 
 fn tick_active_lyrics(
@@ -609,6 +722,15 @@ fn tick_active_lyrics(
 
 fn track_identity_changed(previous: &MediaState, next: &MediaState) -> bool {
     previous.title != next.title || previous.artist != next.artist || previous.album != next.album
+}
+
+fn media_state_update_changed(
+    previous: Option<&MediaState>,
+    next: &MediaState,
+    was_active: bool,
+    is_active: bool,
+) -> bool {
+    previous.is_none_or(|previous| previous != next) || was_active != is_active
 }
 
 fn publish_state(app: &AppHandle, shared_state: &Arc<Mutex<MediaState>>, next_state: MediaState) {
@@ -736,6 +858,10 @@ fn reconcile_taskbar_occlusion(worker: &mut WorkerState, covered: bool) -> Optio
     } else {
         None
     }
+}
+
+fn should_poll_taskbar_visibility(worker: &WorkerState) -> bool {
+    !worker.widget_hidden || worker.taskbar_hidden
 }
 
 fn should_hide_idle_widget(worker: &mut WorkerState, now: Instant) -> bool {
@@ -946,6 +1072,82 @@ mod tests {
             projected_position_ms(179_900, 180_000, "Playing", 750),
             180_000
         );
+    }
+
+    #[test]
+    fn schedules_the_next_lyric_boundary_from_current_position() {
+        let lines = vec![
+            LyricLine {
+                timestamp_ms: 1_000,
+                text: "First".into(),
+            },
+            LyricLine {
+                timestamp_ms: 2_500,
+                text: "Second".into(),
+            },
+        ];
+
+        assert_eq!(
+            next_lyric_delay(&lines, 850),
+            Some(Duration::from_millis(150))
+        );
+        assert_eq!(
+            next_lyric_delay(&lines, 1_000),
+            Some(Duration::from_millis(1_500))
+        );
+        assert_eq!(next_lyric_delay(&lines, 2_500), None);
+    }
+
+    #[test]
+    fn waits_for_an_update_when_no_active_track_exists() {
+        let worker = Arc::new(Mutex::new(WorkerState::default()));
+
+        assert_eq!(next_lyrics_wake_delay(&worker), None);
+    }
+
+    #[test]
+    fn duplicate_media_updates_do_not_count_as_state_changes() {
+        let previous = MediaState {
+            title: "Track".into(),
+            artist: "Artist".into(),
+            playback_status: "Playing".into(),
+            ..MediaState::default()
+        };
+
+        assert!(!media_state_update_changed(
+            Some(&previous),
+            &previous,
+            true,
+            true
+        ));
+
+        let mut position_changed = previous.clone();
+        position_changed.position_ms = 1_000;
+        assert!(media_state_update_changed(
+            Some(&previous),
+            &position_changed,
+            true,
+            true
+        ));
+        assert!(media_state_update_changed(
+            Some(&previous),
+            &previous,
+            false,
+            true
+        ));
+    }
+
+    #[test]
+    fn idle_hidden_widgets_skip_taskbar_polling_but_occluded_widgets_do_not() {
+        let mut worker = WorkerState {
+            widget_hidden: true,
+            ..WorkerState::default()
+        };
+
+        assert!(!should_poll_taskbar_visibility(&worker));
+
+        worker.taskbar_hidden = true;
+        assert!(should_poll_taskbar_visibility(&worker));
     }
 
     #[test]

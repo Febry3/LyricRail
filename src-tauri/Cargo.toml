@@ -1,6 +1,6 @@
 [package]
 name = "taskbar-lyrics-player"
-version = "0.1.0"
+version = "0.1.3"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -13,6 +13,11 @@ edition = "2021"
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "taskbar_lyrics_player_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -27,5 +32,5 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 base64 = "0.22"
 gsmtc = { package = "win-gsmtc", version = "0.1.0" }
 tracing = "0.1"
-tokio = { version = "1", features = ["time"] }
+tokio = { version = "1", features = ["sync", "time"] }
 windows-sys = { version = "0.61", features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
