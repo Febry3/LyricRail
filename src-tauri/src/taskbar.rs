@@ -9,11 +9,12 @@ use std::{
 
 use tauri::{PhysicalPosition, PhysicalSize, Position, WebviewWindow, WindowEvent};
 use windows_sys::Win32::Foundation::RECT;
+use windows_sys::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
 use windows_sys::Win32::UI::Shell::{
     SHAppBarMessage, ABE_BOTTOM, ABE_LEFT, ABE_RIGHT, ABE_TOP, ABM_GETTASKBARPOS, APPBARDATA,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, GetForegroundWindow, GetWindow, GetWindowLongPtrW, GetWindowRect, IsWindowVisible,
+    FindWindowW, GetForegroundWindow, GetWindow, GetWindowLongPtrW, IsWindowVisible,
     SetWindowPos, ShowWindow, GWL_EXSTYLE, GW_HWNDPREV, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE,
     SWP_NOSIZE, SWP_SHOWWINDOW, SW_SHOWNOACTIVATE, WS_EX_TOPMOST,
 };
@@ -117,13 +118,26 @@ pub fn taskbar_is_visible() -> bool {
         return true;
     }
 
-    let mut foreground_rect = RECT::default();
-    if unsafe { GetWindowRect(foreground, &mut foreground_rect) == 0 } {
+    let Some(foreground_rect) = visible_window_bounds(foreground) else {
         return true;
-    }
+    };
 
     let foreground_above_taskbar = window_is_above_taskbar(foreground, taskbar_handle);
     !foreground_window_covers_taskbar(taskbar, foreground_rect, foreground_above_taskbar)
+}
+
+fn visible_window_bounds(window: *mut core::ffi::c_void) -> Option<RECT> {
+    let mut bounds = RECT::default();
+    let result = unsafe {
+        DwmGetWindowAttribute(
+            window,
+            DWMWA_EXTENDED_FRAME_BOUNDS as u32,
+            &mut bounds as *mut RECT as *mut _,
+            std::mem::size_of::<RECT>() as u32,
+        )
+    };
+
+    (result >= 0).then_some(bounds)
 }
 
 fn taskbar_window_handle() -> Option<isize> {

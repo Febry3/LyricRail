@@ -8,14 +8,14 @@
 
 LyricRail is a lightweight Windows desktop utility that keeps the currently playing song and synchronized lyrics visible in a compact overlay attached to the Windows taskbar.
 
-It is designed for listening without repeatedly switching back to Spotify or another media player. The overlay shows album artwork, title, artist, lyric status, and playback controls, while an expanded view provides previous, current, and next lyric lines.
+It is designed for listening without repeatedly switching back to Spotify or another media player. The overlay shows album artwork, title, artist, the current lyric, and playback controls in a compact taskbar widget.
 
 ## Features
 
 - Detects the active Windows media session, including Spotify.
 - Displays title, artist, playback state, and album artwork.
 - Positions a compact, always-on-top overlay inside the taskbar band.
-- Expands into a lyric context view when clicked.
+- Keeps the widget compact while playback controls remain available.
 - Shows previous, current, and next synchronized lyric lines.
 - Provides previous track, play/pause, and next track controls.
 - Keeps the overlay visible briefly while paused, then hides it after two minutes without playback.
@@ -124,7 +124,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 ```text
 src/
 ├── App.tsx             # React UI and Tauri event bindings
-├── App.css             # Compact and expanded overlay styling
+├── App.css             # Compact overlay styling
 └── types/              # Frontend media-state types
 
 src-tauri/

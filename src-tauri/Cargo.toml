@@ -33,4 +33,4 @@ base64 = "0.22"
 gsmtc = { package = "win-gsmtc", version = "0.1.0" }
 tracing = "0.1"
 tokio = { version = "1", features = ["sync", "time"] }
-windows-sys = { version = "0.61", features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_Graphics_Dwm", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }

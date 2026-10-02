@@ -1,4 +1,4 @@
-import { useEffect, useState, type KeyboardEvent } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -132,10 +132,6 @@ function getLyricsTeaser(lyrics: LyricsState) {
     default:
       return "";
   }
-}
-
-function getLyricsLine(line: string | null, fallback: string) {
-  return line?.trim() || fallback;
 }
 
 function getErrorCopy(errorCode: MediaErrorCode | AppErrorCode) {
@@ -298,7 +294,7 @@ function SettingsView() {
         <div className="settings-width__header">
           <span>
             <span className="settings-option__label">Lyrics font size</span>
-            <span className="settings-option__detail">Applies to compact and expanded lyrics.</span>
+            <span className="settings-option__detail">Size of the current lyric line.</span>
           </span>
           <output>{preferences.lyricsFontSize}px</output>
         </div>
@@ -361,7 +357,6 @@ function WidgetView() {
   const [incomingArtworkUrl, setIncomingArtworkUrl] = useState<string | null>(null);
   const [isArtworkTransitioning, setIsArtworkTransitioning] = useState(false);
   const [failedArtworkUrls, setFailedArtworkUrls] = useState<string[]>([]);
-  const [isLyricsExpanded, setIsLyricsExpanded] = useState(false);
   const [controlError, setControlError] = useState<string | null>(null);
   const [displayPreferences, setDisplayPreferences] =
     useState<DisplayPreferences>(loadDisplayPreferences);
@@ -391,9 +386,9 @@ function WidgetView() {
   useEffect(() => {
     void invoke("set_compact_width", {
       width: displayPreferences.width,
-      expanded: isLyricsExpanded,
+      expanded: false,
     });
-  }, [displayPreferences.width, isLyricsExpanded]);
+  }, [displayPreferences.width]);
 
   useEffect(() => {
     document.documentElement.style.setProperty(
@@ -477,13 +472,6 @@ function WidgetView() {
   }, [mediaState.sourceApp, mediaState.trackId]);
 
   useEffect(() => {
-    if (mediaState.trackId === null && isLyricsExpanded) {
-      setIsLyricsExpanded(false);
-      void invoke("set_compact_expanded", { expanded: false });
-    }
-  }, [isLyricsExpanded, mediaState.trackId]);
-
-  useEffect(() => {
     if (mediaState.artworkUrl === displayedArtworkUrl) {
       setIncomingArtworkUrl(null);
       setIsArtworkTransitioning(false);
@@ -544,32 +532,11 @@ function WidgetView() {
     mediaState.lyrics.currentLineIndex ?? "no-line",
     lyricsFocusText,
   ].join(":");
-  const currentLyricsKey = [
-    mediaState.trackId ?? "no-track",
-    mediaState.lyrics.currentLineIndex ?? "no-line",
-    mediaState.lyrics.currentLine ?? lyricsTeaser,
-  ].join(":");
   const progressRatio = getProgressRatio(mediaState.positionMs, mediaState.durationMs);
   const progressMax = Math.max(mediaState.durationMs, 1);
   const progressNow = Math.min(Math.max(mediaState.positionMs, 0), progressMax);
   const progressValueText = `${formatDuration(mediaState.positionMs)} of ${formatDuration(mediaState.durationMs)}`;
   const artworkAltText = getArtworkAltText(mediaState.title, mediaState.artist);
-  const toggleLyricsContext = () => {
-    const nextExpanded = !isLyricsExpanded;
-    setIsLyricsExpanded(nextExpanded);
-    void invoke("set_compact_expanded", {
-      expanded: nextExpanded,
-      width: displayPreferences.width,
-    }).catch(() => {
-      setIsLyricsExpanded(false);
-    });
-  };
-  const handleStripKeyDown = (event: KeyboardEvent<HTMLElement>) => {
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      toggleLyricsContext();
-    }
-  };
   const handleMediaControl = (
     command: "previous_track" | "play_pause" | "next_track",
     label: string,
@@ -585,8 +552,6 @@ function WidgetView() {
   const showMediaCopy = displayPreferences.title || displayPreferences.artist;
   const mediaStripClassName = [
     "media-strip",
-    hasActiveSession ? "media-strip--interactive" : "",
-    isLyricsExpanded ? "media-strip--expanded" : "",
     !displayPreferences.albumArt ? "media-strip--no-artwork" : "",
     !hasVisibleControls ? "media-strip--no-controls" : "",
     displayPreferences.transparentBackground ? "media-strip--transparent" : "",
@@ -598,14 +563,7 @@ function WidgetView() {
     <main className="container">
       <section
         className={mediaStripClassName}
-        role={hasActiveSession ? "group" : undefined}
-        tabIndex={hasActiveSession ? 0 : -1}
-        aria-expanded={hasActiveSession ? isLyricsExpanded : undefined}
-        aria-controls={hasActiveSession ? "lyrics-context" : undefined}
-        aria-label={hasActiveSession ? "Toggle lyrics context" : undefined}
         aria-live="polite"
-        onClick={hasActiveSession ? toggleLyricsContext : undefined}
-        onKeyDown={hasActiveSession ? handleStripKeyDown : undefined}
       >
         {displayPreferences.albumArt && (
           <div className="artwork-tile" aria-hidden={!currentArtworkUrl && !nextArtworkUrl}>
@@ -670,43 +628,6 @@ function WidgetView() {
                 </div>
               )}
             </div>
-            {displayPreferences.lyrics && isLyricsExpanded && (
-              <section
-                id="lyrics-context"
-                className="lyrics-context"
-                aria-label="Lyrics context"
-                onClick={(event) => event.stopPropagation()}
-              >
-                <div className="lyrics-context__header">
-                  <p className="lyrics-context__title">Lyrics</p>
-                  <button
-                    className="lyrics-context__toggle"
-                    type="button"
-                    onClick={toggleLyricsContext}
-                    onKeyDown={(event) => event.stopPropagation()}
-                    aria-label="Hide lyrics context"
-                  >
-                    Hide
-                  </button>
-                </div>
-                <div className="lyrics-context__lines">
-                  <p className="lyrics-line lyrics-line--previous">
-                    <span className="lyrics-line__label">Previous</span>
-                    <span>{getLyricsLine(mediaState.lyrics.previousLine, "—")}</span>
-                  </p>
-                  <p key={currentLyricsKey} className="lyrics-line lyrics-line--current">
-                    <span className="lyrics-line__label">Current</span>
-                    <span>
-                      {getLyricsLine(mediaState.lyrics.currentLine, lyricsTeaser || "—")}
-                    </span>
-                  </p>
-                  <p className="lyrics-line lyrics-line--next">
-                    <span className="lyrics-line__label">Next</span>
-                    <span>{getLyricsLine(mediaState.lyrics.nextLine, "—")}</span>
-                  </p>
-                </div>
-              </section>
-            )}
             {displayPreferences.progress && (
               <div
                 className="progress-rail"
